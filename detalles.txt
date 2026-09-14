@@ -1,0 +1,80 @@
+Primero instalar tk si no lo tienes
+pip install tk
+
+instalar re si no lo tienes
+pip install re
+
+de ahí para ejecutarlo en en el main.py 
+
+código de prueba para poner dentro de la GUI -- revisar que no haya problema 
+
+// Programa de prueba extenso para el analizador lexico
+void QprocesoZ() {
+    full QcontadorZ ;
+    QcontadorZ = 0 ;
+    QcontadorZ = QcontadorZ + 1 ;
+}
+
+/* Funcion que calcula un promedio
+   y regresa un valor real */
+royal QpromedioZ() {
+    royal QsumaZ, QtotalZ ;
+    QsumaZ = 10.5 + 20.25 ;
+    QtotalZ = QsumaZ / 2 ;
+    return QtotalZ ;
+}
+
+full QaZ, QbZ, QcZ ;
+QaZ = 5 ;
+QbZ = 10 ;
+QcZ = QaZ * QbZ - 3 ;
+
+royal QpiZ ;
+QpiZ = 3.1416 ;
+
+chain QsaludoZ, QdespedidaZ ;
+QsaludoZ = "Hola" ;
+QdespedidaZ = "Adios" ;
+
+// Reutilizamos lexemas ya usados (no deben duplicarse)
+QaZ = 5 ;
+QpiZ = 3.1416 ;
+QsaludoZ = "Hola" ;
+
+// Arreglo con corchetes
+full QlistaZ[5] ;
+QlistaZ[0] = 1 ;
+QlistaZ[1] = 2 ;
+
+// Variable usada sin haberse declarado antes (Tipo debe quedar vacio)
+QnoDeclaradaZ = 99 ;
+
+if (QaZ) {
+    QbZ = QbZ + 1 ;
+}
+
+
+
+
+
+full QedadZ, QaZ ;
+QedadZ = 20 + 5 ;
+QaZ = QedadZ * 2 ;
+
+royal QsaldoZ ;
+QsaldoZ = 99.5 ;
+
+chain QmensajeZ ;
+QmensajeZ = "listo" ;
+
+edadUsuario = 30 ;
+temp = 1.5 ;
+
+full QsumaZ() {
+    return QaZ ;
+}
+
+QotroZ = QaZ + 1 ;
+QaZ = QedadZ * 2 ;
+
+QhhhhZ = 1.1;
