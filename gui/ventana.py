@@ -133,7 +133,7 @@ class CompiladorGUI:
         self.tabla_errores.column("Token", width=80, anchor="center")
         self.tabla_errores.column("Lexema", width=100, anchor="center")
         self.tabla_errores.column("Renglón", width=70, anchor="center")
-        self.tabla_errores.column("Descripción", width=250, anchor="w")
+        self.tabla_errores.column("Descripción", width=500, minwidth=300, anchor="w")
         self.tabla_errores.pack(fill="both", expand=True, padx=5, pady=5)
 
         scroll_err = ttk.Scrollbar(frame_errores, orient="vertical", command=self.tabla_errores.yview)
@@ -289,8 +289,201 @@ class CompiladorGUI:
             )
             lexemas_insertados.add(tok.lexema)
 
+    def verificar_asignaciones(self, tokens, tipos_declarados):
+        """Verifica que el tipo asignado coincida con el tipo de la variable."""
+
+        i = 0
+
+        while i < len(tokens):
+            token = tokens[i]
+
+            # Buscamos un identificador seguido de "="
+            if (
+                token.tipo == "id"
+                and i + 1 < len(tokens)
+                and tokens[i + 1].tipo == "op"
+                and tokens[i + 1].lexema == "="
+            ):
+                identificador = token.lexema
+                tipo_variable = tipos_declarados.get(identificador)
+
+                # El token que está después del "="
+                if i + 2 < len(tokens):
+                    # Obtener todos los tokens de la expresión hasta ";"
+                    j = i + 2
+                    expresion = []
+
+                    while j < len(tokens) and tokens[j].lexema != ";":
+                        expresion.append(tokens[j])
+                        j += 1
+
+                    tipo_expresion = self.obtener_tipo_expresion(
+                        expresion,
+                        tipos_declarados
+                    )
+
+
+                    # Si conocemos ambos tipos, los comparamos
+                    if tipo_variable is not None and tipo_expresion is not None:
+                        if tipo_variable != tipo_expresion:
+                            self.tabla_errores.insert(
+                                "",
+                                "end",
+                                values=(
+                                    "ErrorSeman",
+                                    identificador,
+                                    token.renglon,
+                                    f"La variable '{identificador}' es de tipo "
+                                    f"'{tipo_variable}', pero la expresión es "
+                                    f"de tipo '{tipo_expresion}'."
+                                )
+                            )
+
+                i += 2
+                continue
+
+            i += 1
+
+    def obtener_tipo_token(self, token, tipos_declarados):
+        """Determina el tipo semántico de un token."""
+
+         # Literales
+        if token.tipo == "full":
+                return "full"
+
+        if token.tipo == "royal":
+            return "royal"
+
+        if token.tipo == "chain":
+            return "chain"
+
+        # Identificador
+        if token.tipo == "id":
+            return tipos_declarados.get(token.lexema)
+
+        return None
+
+    def obtener_tipo_operacion(self, tipo_izq, operador, tipo_der):
+        """Determina el tipo resultante de una operación aritmética."""
+
+        # Verificamos que ambos operandos sean numéricos
+        if tipo_izq not in ("full", "royal") or tipo_der not in ("full", "royal"):
+            return None
+
+        # Si alguno es royal, el resultado es royal
+        if tipo_izq == "royal" or tipo_der == "royal":
+            return "royal"
+
+        #  Operaciones entre full
+        if operador in ("+", "-", "*"):
+            return "full"
+
+        # La división se maneja en obtener_tipo_expresion()
+        if operador == "/":
+            return "royal"
+
+        return None
+
+    def obtener_tipo_expresion(self, expresion, tipos_declarados):
+        """Determina el tipo semántico de una expresión aritmética."""
+
+        if not expresion:
+            return None
+
+        # Primer operando
+        tipo_resultado = self.obtener_tipo_token(
+            expresion[0],
+            tipos_declarados
+        )
+
+        if tipo_resultado is None:
+            return None
+
+        i = 1
+
+        while i < len(expresion):
+            operador = expresion[i]
+
+            if operador.tipo != "op":
+                i += 1
+                continue
+
+            # Operando de la derecha
+            if i + 1 >= len(expresion):
+                return None
+
+            operando_derecho = expresion[i + 1]
+
+            tipo_derecha = self.obtener_tipo_token(
+                operando_derecho,
+                tipos_declarados
+            )
+
+            if tipo_derecha is None:
+                return None
+
+            # Regla especial para división
+            if operador.lexema == "/":
+            
+                # Si ambos son full
+                if tipo_resultado == "full" and tipo_derecha == "full":
+
+                    # Comprobamos que sean números escritos directamente
+                    if (
+                        expresion[i - 1].tipo == "full"
+                        and operando_derecho.tipo == "full"
+                    ):
+                        izquierda = int(expresion[i - 1].lexema)
+                        derecha = int(operando_derecho.lexema)
+
+                        # División exacta
+                        if derecha != 0 and izquierda % derecha == 0:
+                            tipo_resultado = "full"
+                        else:
+                            tipo_resultado = "royal"
+
+                    else:
+                        # Si son variables, todavía no conocemos sus valores
+                        tipo_resultado = "royal"
+
+                else:
+                    # Si participa un royal, el resultado es royal
+                    tipo_resultado = "royal"
+
+            else:
+                # Para +, - y *
+                tipo_izquierda = tipo_resultado
+
+                tipo_resultado = self.obtener_tipo_operacion(
+                    tipo_izquierda,
+                    operador.lexema,
+                    tipo_derecha
+                )
+
+                if tipo_resultado is None:
+
+                    self.tabla_errores.insert(
+                        "",
+                        "end",
+                        values=(
+                            "ErrorSeman",
+                            operador.lexema,
+                            operador.renglon,
+                            f"No se puede realizar la operación "
+                            f"'{operador.lexema}' entre los tipos "
+                            f"'{tipo_izquierda}' y '{tipo_derecha}'."
+                        )
+                    )
+
+                    return None
+
+            i += 2
+
+        return tipo_resultado
+    
     def ejecutar(self):
-        """Aquí irá la lógica del análisis semántico."""
+        """Ejecuta el análisis semántico."""
+
         codigo = self.txt_codigo.get("1.0", tk.END).strip()
         self.limpiar_tablas()
 
@@ -301,5 +494,11 @@ class CompiladorGUI:
         tokenizador = Tokenizador(codigo)
         tokens = tokenizador.tokenizar()
 
-        # 2. Llenar la tabla de símbolos
+        # 2. Obtener los tipos de las variables declaradas
+        tipos_declarados = self._inferir_tipos_declarados(tokens)
+
+        # 3. Llenar tabla de símbolos
         self.llenar_tabla_simbolos(tokens)
+
+        # 4. Verificar tipos en las asignaciones
+        self.verificar_asignaciones(tokens, tipos_declarados)   

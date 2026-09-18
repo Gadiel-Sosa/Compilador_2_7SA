@@ -51,7 +51,7 @@ class Tokenizador:
     def tokenizar(self):
         """Recorre el código y genera la lista de tokens."""
         codigo_limpio = self._quitar_comentarios(self.codigo)
-        for num_linea, linea in enumerate(codigo_limpio.split("\n"), start=1):
+        for num_linea, linea in enumerate(codigo_limpio.split("\n"), start=1): 
             self._procesar_linea(linea, num_linea)
         return self.tokens
 
