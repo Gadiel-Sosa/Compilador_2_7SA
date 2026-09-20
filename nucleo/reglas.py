@@ -46,3 +46,9 @@ REGLAS_ARITMETICAS = {
     ("chain", "chain", "+", "chain"): "chain",
     ("chain", "chain", "-", "chain"): "chain",
 }
+
+REGLAS = {
+    "full":  {"operandos": {"full"},          "operadores": {"+", "-", "*"}},
+    "royal": {"operandos": {"full", "royal"}, "operadores": {"+", "-", "*", "/"}},
+    "chain": {"operandos": {"chain"},         "operadores": {"+", "-"}},
+}

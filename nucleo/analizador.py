@@ -3,7 +3,7 @@ Analizador semántico: recorre los tokens, construye la tabla de símbolos,
 y verifica que las asignaciones y operaciones respeten las reglas del PDF.
 """
 
-from nucleo.reglas import REGLAS_ARITMETICAS
+from nucleo.reglas import REGLAS_ARITMETICAS, REGLAS
 
 
 class Resultado:
@@ -22,7 +22,6 @@ class Analizador:
         self.tipos_declarados = {}   # {lexema: tipo}
         self.resultado = Resultado()
         self.contador_errores = 0
-
 
     def analizar(self):
         """Ejecuta las fases del análisis y devuelve el resultado."""
@@ -77,7 +76,11 @@ class Analizador:
                             m += 1
                         for var in ids_declarados:
                             self.tipos_declarados[var] = tipo_decl
+                        # 'continue' para no saltarnos tokens[m]: si la
+                        # declaración terminó por cambio de línea, es el primer
+                        # token de la línea siguiente (p. ej. otro 'royal').
                         i = m
+                        continue
             i += 1
 
     # ---------------------------------------------------------
@@ -155,7 +158,7 @@ class Analizador:
                                 not self._asignacion_valida(tipo_variable, tipo_expresion):
                             errores_reportados = set()
                             self._insertar_error(
-                                tok.lexema, tok.renglon,
+                                tok,
                                 f"Incompatibilidad de tipos, {tipo_variable}",
                                 errores_reportados
                             )
@@ -191,19 +194,19 @@ class Analizador:
             return True
         return False
 
-    def _insertar_error(self, lexema, renglon, descripcion, errores_reportados):
+    def _insertar_error(self, tok, descripcion, errores_reportados):
         """
-        Inserta un error, evitando duplicados en la misma línea.
-        'errores_reportados' es un set con tuplas (lexema, renglon) ya vistas.
+        Inserta un error sin reportar dos veces el MISMO token (el recorrido
+        de dos en dos visita cada operando del medio dos veces).
+        'errores_reportados' es un set con los id() de los tokens ya reportados.
         """
-        clave = (lexema, renglon)
-        if clave in errores_reportados:
+        if id(tok) in errores_reportados:
             return
-        errores_reportados.add(clave)
+        errores_reportados.add(id(tok))
 
         self.contador_errores += 1
         self.resultado.errores.append(
-            (f"ErrSem{self.contador_errores}", lexema, renglon, descripcion)
+            (f"ErrSem{self.contador_errores}", tok.lexema, tok.renglon, descripcion)
         )
 
     # ---------------------------------------------------------
@@ -250,8 +253,7 @@ class Analizador:
                         tok_culpable = operando_derecho_tok
 
                     self._insertar_error(
-                        tok_culpable.lexema,
-                        tok_culpable.renglon,
+                        tok_culpable,
                         f"Incompatibilidad de tipos, {tipo_variable}",
                         errores_reportados
                     )
@@ -277,44 +279,19 @@ class Analizador:
         return False, None, culpables
 
     def _determinar_culpables(self, variable, izq, op, der):
-        """Determina los culpables cuando una operación no es válida."""
+        """
+        Culpable = todo lo que la regla del tipo de la variable de asignación
+        no permite: operando izquierdo, operador u operando derecho.
+        """
+        regla = REGLAS.get(variable)
+        if regla is None:
+            return []
+
         culpables = []
-
-        # -------- Caso 1: hay chain --------
-        if izq == "chain" or der == "chain":
-            # Operador inválido con chain (* o /) → culpable el operador
-            if op not in ("+", "-"):
-                culpables.append("op")
-
-            # Si la variable NO es chain, el operando chain es culpable
-            if variable != "chain":
-                if izq == "chain":
-                    culpables.append("izq")
-                if der == "chain":
-                    culpables.append("der")
-
-            return culpables
-
-        # -------- Caso 2: variable full con royal --------
-        if variable == "full":
-            if izq == "royal":
-                culpables.append("izq")
-            if der == "royal":
-                culpables.append("der")
-            if not culpables:
-                culpables.append("op")
-            return culpables
-
-        # -------- Caso 3: variable chain con numéricos --------
-        if variable == "chain":
-            if izq in ("full", "royal"):
-                culpables.append("izq")
-            if der in ("full", "royal"):
-                culpables.append("der")
-            if not culpables:
-                culpables.append("op")
-            return culpables
-
-        # -------- Fallback --------
-        culpables.append("op")
+        if izq not in regla["operandos"]:
+            culpables.append("izq")
+        if op not in regla["operadores"]:
+            culpables.append("op")
+        if der not in regla["operandos"]:
+            culpables.append("der")
         return culpables
