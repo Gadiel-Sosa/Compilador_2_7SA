@@ -30,10 +30,16 @@ class Tokenizador:
     """Convierte el código fuente en una lista de tokens."""
 
     # Palabras reservadas del lenguaje
-    RESERVADAS = {"full", "royal", "chain", "void", "return", "if"}
+    RESERVADAS = {
+        "full", "royal", "chain", "void", "return", "if", "else",
+        "return"
+        
+        }
 
     # Operadores
-    OPERADORES = {"=", "+", "-", "*", "/"}
+    OPERADORES = {"=", "+", "-", "*", "/", "<", ">", "!"}
+    
+    OPERADORES_2 = {"<=", ">=", "==", "!=", "&&", "||"}
 
     # Delimitadores (incluye paréntesis, llaves y corchetes)
     DELIMITADORES = {";", ",", "(", ")", "{", "}", "[", "]"}
@@ -123,6 +129,15 @@ class Tokenizador:
                 pos = j
                 continue
 
+            # ----- Operadores de DOS caracteres (se intentan PRIMERO) -----
+            if pos + 2 <= len(linea):
+                dos_chars = linea[pos:pos+2]
+                if dos_chars in self.OPERADORES_2:
+                    self.tokens.append(Token("op", dos_chars, num_linea))
+                    pos += 2
+                    continue
+
+            # ----- Operadores de UN carácter -----
             if char in self.OPERADORES:
                 self.tokens.append(Token("op", char, num_linea))
                 pos += 1

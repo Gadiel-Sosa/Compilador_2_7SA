@@ -1,45 +1,86 @@
 """
-Analizador semántico: recorre los tokens, construye la tabla de símbolos,
-y verifica que las asignaciones y operaciones respeten las reglas del PDF.
+Analizador semántico con manejo de ámbitos (scopes).
+
+- Pila de diccionarios para tipos declarados.
+- Búsqueda jerárquica: local → padre → global.
+- Detección de duplicados en el mismo ámbito.
+- Detección de variables/funciones indefinidas.
 """
 
 from nucleo.reglas import REGLAS_ARITMETICAS, REGLAS
 
 
 class Resultado:
-    """Encapsula el resultado del análisis."""
-
     def __init__(self):
-        self.simbolos = []    # lista de (lexema, tipo)
-        self.errores = []     # lista de (token, lexema, renglon, descripcion)
+        self.simbolos = []    # (lexema, tipo)
+        self.errores = []     # (token, lexema, renglon, descripcion)
 
 
 class Analizador:
-    """Realiza el análisis semántico sobre la lista de tokens."""
-
     def __init__(self, tokens):
         self.tokens = tokens
-        self.tipos_declarados = {}   # {lexema: tipo}
         self.resultado = Resultado()
         self.contador_errores = 0
 
+        # Pila de ámbitos: cada nivel es {nombre: tipo}
+        self.pila_tipos = [{}]
+
+        # Para la tabla de símbolos: cada nombre con su tipo "global" (el primero encontrado)
+        self.simbolos_globales = {}
+
+    # =========================================================
+    # API pública
+    # =========================================================
     def analizar(self):
-        """Ejecuta las fases del análisis y devuelve el resultado."""
         self._inferir_tipos_declarados()
+        self._verificar_duplicados()
         self._llenar_tabla_simbolos()
+        self._verificar_variables_indefinidas()
         self._verificar_asignaciones()
+
+        # Ordenar errores por renglón
+        self.resultado.errores.sort(key=lambda e: e[2])
+
+        # Reasignar tokens secuencialmente
+        errores_renumerados = []
+        for idx, (_, lexema, renglon, descripcion) in enumerate(self.resultado.errores, start=1):
+            errores_renumerados.append((f"ErrSem{idx}", lexema, renglon, descripcion))
+        self.resultado.errores = errores_renumerados
+
         return self.resultado
 
-    # ---------------------------------------------------------
+    # =========================================================
+    # Búsqueda jerárquica de tipos
+    # =========================================================
+    def _buscar_tipo(self, nombre):
+        """Busca un tipo en la pila de ámbitos: local → padre → global."""
+        for ambito in reversed(self.pila_tipos):
+            if nombre in ambito:
+                return ambito[nombre]
+        return None
+
+    # =========================================================
     # Fase 1: inferir tipos declarados
-    # ---------------------------------------------------------
+    # =========================================================
     def _inferir_tipos_declarados(self):
-        """Recorre los tokens buscando declaraciones de tipos."""
         tokens = self.tokens
         n = len(tokens)
         i = 0
         while i < n:
             tok = tokens[i]
+
+            # --- Apertura / cierre de bloque ---
+            if tok.tipo == "delim" and tok.lexema == "{":
+                self.pila_tipos.append({})
+                i += 1
+                continue
+            if tok.tipo == "delim" and tok.lexema == "}":
+                if len(self.pila_tipos) > 1:
+                    self.pila_tipos.pop()
+                i += 1
+                continue
+
+            # --- Declaración de tipo ---
             if tok.tipo == "reservada" and tok.lexema in ("full", "royal", "chain", "void"):
                 tipo_decl = tok.lexema
                 renglon_decl = tok.renglon
@@ -49,9 +90,13 @@ class Analizador:
                     nombre = tokens[j].lexema
                     k = j + 1
 
+                    # Función: tipo nombre ( ... )
                     if k < n and tokens[k].tipo == "delim" and tokens[k].lexema == "(":
-                        # Función
-                        self.tipos_declarados[nombre] = tipo_decl
+                        if nombre not in self.pila_tipos[-1]:
+                            self.pila_tipos[-1][nombre] = tipo_decl
+                            if nombre not in self.simbolos_globales:
+                                self.simbolos_globales[nombre] = tipo_decl
+                        # Saltar paréntesis
                         profundidad = 1
                         k += 1
                         while k < n and profundidad > 0:
@@ -63,7 +108,7 @@ class Analizador:
                         i = k
                         continue
                     else:
-                        # Declaración de variables (hasta ';' o cambio de línea)
+                        # Variables — declaración normal
                         ids_declarados = [nombre]
                         m = k
                         while m < n:
@@ -75,30 +120,119 @@ class Analizador:
                                 ids_declarados.append(tokens[m].lexema)
                             m += 1
                         for var in ids_declarados:
-                            self.tipos_declarados[var] = tipo_decl
-                        # 'continue' para no saltarnos tokens[m]: si la
-                        # declaración terminó por cambio de línea, es el primer
-                        # token de la línea siguiente (p. ej. otro 'royal').
+                            if var not in self.pila_tipos[-1]:
+                                self.pila_tipos[-1][var] = tipo_decl
+                                if var not in self.simbolos_globales:
+                                    self.simbolos_globales[var] = tipo_decl
                         i = m
                         continue
             i += 1
 
-    # ---------------------------------------------------------
+    # =========================================================
+    # Fase 1.5: verificar duplicados (por ámbito)
+    # =========================================================
+    def _verificar_duplicados(self):
+        """
+        Detecta declaraciones duplicadas en el mismo ámbito.
+        Reinicia la pila de ámbitos para recorrer de nuevo.
+        """
+        tokens = self.tokens
+        n = len(tokens)
+        errores_reportados = set()
+
+        pila_ambitos = [{}]
+
+        i = 0
+        while i < n:
+            tok = tokens[i]
+
+            if tok.tipo == "delim" and tok.lexema == "{":
+                pila_ambitos.append({})
+                i += 1
+                continue
+            if tok.tipo == "delim" and tok.lexema == "}":
+                if len(pila_ambitos) > 1:
+                    pila_ambitos.pop()
+                i += 1
+                continue
+
+            if tok.tipo == "reservada" and tok.lexema in ("full", "royal", "chain", "void"):
+                renglon_decl = tok.renglon
+                j = i + 1
+
+                if j < n and tokens[j].tipo == "id":
+                    nombre = tokens[j].lexema
+                    ambito_actual = pila_ambitos[-1]
+
+                    if nombre in ambito_actual:
+                        clave = (nombre, tokens[j].renglon)
+                        if clave not in errores_reportados:
+                            errores_reportados.add(clave)
+                            self.contador_errores += 1
+                            self.resultado.errores.append(
+                                (f"ErrSem{self.contador_errores}",
+                                 nombre,
+                                 tokens[j].renglon,
+                                 "Declaración duplicada")
+                            )
+                    else:
+                        ambito_actual[nombre] = True
+
+                    k = j + 1
+
+                    # Función: saltar paréntesis
+                    if k < n and tokens[k].tipo == "delim" and tokens[k].lexema == "(":
+                        profundidad = 1
+                        k += 1
+                        while k < n and profundidad > 0:
+                            if tokens[k].tipo == "delim" and tokens[k].lexema == "(":
+                                profundidad += 1
+                            elif tokens[k].tipo == "delim" and tokens[k].lexema == ")":
+                                profundidad -= 1
+                            k += 1
+                        i = k
+                        continue
+
+                    # Variables — declaración normal
+                    m = k
+                    while m < n:
+                        if tokens[m].renglon != renglon_decl:
+                            break
+                        if tokens[m].tipo == "delim" and tokens[m].lexema == ";":
+                            break
+                        if tokens[m].tipo == "id":
+                            otro_nombre = tokens[m].lexema
+                            if otro_nombre in ambito_actual:
+                                clave = (otro_nombre, tokens[m].renglon)
+                                if clave not in errores_reportados:
+                                    errores_reportados.add(clave)
+                                    self.contador_errores += 1
+                                    self.resultado.errores.append(
+                                        (f"ErrSem{self.contador_errores}",
+                                         otro_nombre,
+                                         tokens[m].renglon,
+                                         "Declaración duplicada")
+                                    )
+                            else:
+                                ambito_actual[otro_nombre] = True
+                        m += 1
+                    i = m
+                    continue
+            i += 1
+
+    # =========================================================
     # Fase 2: llenar la tabla de símbolos
-    # ---------------------------------------------------------
+    # =========================================================
     def _llenar_tabla_simbolos(self):
         lexemas_insertados = set()
 
         for tok in self.tokens:
-            # Palabras reservadas de tipo
             if tok.tipo == "reservada":
-                if tok.lexema in ("full", "royal", "chain", "void"):
-                    if tok.lexema not in lexemas_insertados:
-                        self.resultado.simbolos.append((tok.lexema, ""))
-                        lexemas_insertados.add(tok.lexema)
+                if tok.lexema not in lexemas_insertados:
+                    self.resultado.simbolos.append((tok.lexema, ""))
+                    lexemas_insertados.add(tok.lexema)
                 continue
 
-            # Operadores y delimitadores (tipo vacío)
             if tok.tipo in ("op", "delim"):
                 if tok.lexema in lexemas_insertados:
                     continue
@@ -106,7 +240,6 @@ class Analizador:
                 lexemas_insertados.add(tok.lexema)
                 continue
 
-            # Solo id y literales
             if tok.tipo not in ("id", "full", "royal", "chain"):
                 continue
 
@@ -114,67 +247,223 @@ class Analizador:
                 continue
 
             if tok.tipo == "id":
-                tipo_tabla = self.tipos_declarados.get(tok.lexema, "")
+                # Tipo de la primera declaración encontrada
+                tipo_tabla = self.simbolos_globales.get(tok.lexema, "")
             else:
                 tipo_tabla = tok.tipo
 
             self.resultado.simbolos.append((tok.lexema, tipo_tabla))
             lexemas_insertados.add(tok.lexema)
 
-    # ---------------------------------------------------------
-    # Fase 3: verificar asignaciones
-    # ---------------------------------------------------------
-    def _verificar_asignaciones(self):
+    # =========================================================
+    # Fase 3: verificar variables y funciones indefinidas
+    # =========================================================
+    def _verificar_variables_indefinidas(self):
+        """
+        Recorre los tokens con una pila de ámbitos paralela.
+        Verifica que cada id esté declarado en algún ámbito accesible.
+        """
         tokens = self.tokens
-        i = 0
-        while i < len(tokens):
-            token = tokens[i]
+        n = len(tokens)
+        errores_reportados = set()
 
-            if (
-                token.tipo == "id"
-                and i + 1 < len(tokens)
+        pila_ambitos = [{}]
+
+        i = 0
+        while i < n:
+            tok = tokens[i]
+
+            # Apertura / cierre de bloque
+            if tok.tipo == "delim" and tok.lexema == "{":
+                pila_ambitos.append({})
+                i += 1
+                continue
+            if tok.tipo == "delim" and tok.lexema == "}":
+                if len(pila_ambitos) > 1:
+                    pila_ambitos.pop()
+                i += 1
+                continue
+
+            # Registrar declaraciones para esta pasada
+            if tok.tipo == "reservada" and tok.lexema in ("full", "royal", "chain", "void"):
+                renglon_decl = tok.renglon
+                j = i + 1
+                if j < n and tokens[j].tipo == "id":
+                    nombre = tokens[j].lexema
+                    k = j + 1
+
+                    # ¿Es función? (id seguido de '(')
+                    if k < n and tokens[k].tipo == "delim" and tokens[k].lexema == "(":
+                        pila_ambitos[-1][nombre] = True
+                        profundidad = 1
+                        k += 1
+                        while k < n and profundidad > 0:
+                            if tokens[k].tipo == "delim" and tokens[k].lexema == "(":
+                                profundidad += 1
+                            elif tokens[k].tipo == "delim" and tokens[k].lexema == ")":
+                                profundidad -= 1
+                            k += 1
+                        i = k
+                        continue
+                    else:
+                        # Variables: registrar TODAS las separadas por comas
+                        pila_ambitos[-1][nombre] = True
+                        m = k
+                        while m < n:
+                            if tokens[m].renglon != renglon_decl:
+                                break
+                            if tokens[m].tipo == "delim" and tokens[m].lexema == ";":
+                                break
+                            if tokens[m].tipo == "id":
+                                pila_ambitos[-1][tokens[m].lexema] = True
+                            m += 1
+                        i = m
+                        continue
+                i += 1
+                continue
+
+            # Verificar uso de id
+            if tok.tipo == "id":
+                esta_declarado = any(tok.lexema in ambito for ambito in pila_ambitos)
+
+                if not esta_declarado:
+                    es_funcion = (
+                        i + 1 < n
+                        and tokens[i + 1].tipo == "delim"
+                        and tokens[i + 1].lexema == "("
+                    )
+                    descripcion = "Función indefinida" if es_funcion else "Variable indefinida"
+
+                    clave = (tok.lexema, tok.renglon)
+                    if clave not in errores_reportados:
+                        errores_reportados.add(clave)
+                        self.contador_errores += 1
+                        self.resultado.errores.append(
+                            (f"ErrSem{self.contador_errores}",
+                             tok.lexema,
+                             tok.renglon,
+                             descripcion)
+                        )
+
+            i += 1
+
+    # =========================================================
+    # Fase 4: verificar asignaciones
+    # =========================================================
+    def _verificar_asignaciones(self):
+        """
+        Recorre los tokens buscando el patrón id = expresión ;
+        y evalúa el tipo usando la pila de ámbitos.
+        """
+        tokens = self.tokens
+        n = len(tokens)
+
+        pila_ambitos = [{}]
+        i = 0
+        while i < n:
+            tok = tokens[i]
+
+            # Actualizar pila de ámbitos
+            if tok.tipo == "delim" and tok.lexema == "{":
+                pila_ambitos.append({})
+                i += 1
+                continue
+            if tok.tipo == "delim" and tok.lexema == "}":
+                if len(pila_ambitos) > 1:
+                    pila_ambitos.pop()
+                i += 1
+                continue
+
+            # Registrar declaraciones
+            if tok.tipo == "reservada" and tok.lexema in ("full", "royal", "chain", "void"):
+                tipo_decl = tok.lexema
+                renglon_decl = tok.renglon
+                j = i + 1
+                if j < n and tokens[j].tipo == "id":
+                    nombre = tokens[j].lexema
+                    k = j + 1
+
+                    # Función
+                    if k < n and tokens[k].tipo == "delim" and tokens[k].lexema == "(":
+                        if nombre not in pila_ambitos[-1]:
+                            pila_ambitos[-1][nombre] = tipo_decl
+                        profundidad = 1
+                        k += 1
+                        while k < n and profundidad > 0:
+                            if tokens[k].tipo == "delim" and tokens[k].lexema == "(":
+                                profundidad += 1
+                            elif tokens[k].tipo == "delim" and tokens[k].lexema == ")":
+                                profundidad -= 1
+                            k += 1
+                        i = k
+                        continue
+                    else:
+                        # Variables
+                        ids_declarados = [nombre]
+                        m = k
+                        while m < n:
+                            if tokens[m].renglon != renglon_decl:
+                                break
+                            if tokens[m].tipo == "delim" and tokens[m].lexema == ";":
+                                break
+                            if tokens[m].tipo == "id":
+                                ids_declarados.append(tokens[m].lexema)
+                            m += 1
+                        for var in ids_declarados:
+                            if var not in pila_ambitos[-1]:
+                                pila_ambitos[-1][var] = tipo_decl
+                        i = m
+                        continue
+
+            # Detectar asignación
+            if (tok.tipo == "id"
+                and i + 1 < n
                 and tokens[i + 1].tipo == "op"
-                and tokens[i + 1].lexema == "="
-            ):
-                identificador = token.lexema
-                tipo_variable = self.tipos_declarados.get(identificador)
+                and tokens[i + 1].lexema == "="):
+
+                identificador = tok.lexema
+                tipo_variable = self._buscar_tipo_en_pila(pila_ambitos, identificador)
 
                 if tipo_variable is None:
                     i += 2
                     continue
 
-                if i + 2 < len(tokens):
+                if i + 2 < n:
                     j = i + 2
                     expresion = []
-                    while j < len(tokens) and tokens[j].lexema != ";":
+                    while j < n and tokens[j].lexema != ";":
                         expresion.append(tokens[j])
                         j += 1
 
                     if len(expresion) == 1:
-                        # Expresión con un solo token
-                        tok = expresion[0]
-                        tipo_expresion = self._obtener_tipo_token(tok)
+                        tokk = expresion[0]
+                        tipo_expresion = self._tipo_de_token(tokk, pila_ambitos)
                         if tipo_expresion is not None and \
                                 not self._asignacion_valida(tipo_variable, tipo_expresion):
                             errores_reportados = set()
                             self._insertar_error(
-                                tok,
+                                tokk,
                                 f"Incompatibilidad de tipos, {tipo_variable}",
                                 errores_reportados
                             )
                     else:
-                        # Expresión compleja
-                        self._evaluar_expresion(expresion, tipo_variable)
+                        self._evaluar_expresion(expresion, tipo_variable, pila_ambitos)
 
                 i += 2
                 continue
 
             i += 1
 
-    # ---------------------------------------------------------
-    # Utilidades
-    # ---------------------------------------------------------
-    def _obtener_tipo_token(self, token):
+    # =========================================================
+    # Búsqueda de tipo en la pila (para la fase 4)
+    # =========================================================
+    def _buscar_tipo_en_pila(self, pila, nombre):
+        for ambito in reversed(pila):
+            if nombre in ambito:
+                return ambito[nombre]
+        return None
+
+    def _tipo_de_token(self, token, pila):
         if token.tipo == "full":
             return "full"
         if token.tipo == "royal":
@@ -182,9 +471,12 @@ class Analizador:
         if token.tipo == "chain":
             return "chain"
         if token.tipo == "id":
-            return self.tipos_declarados.get(token.lexema)
+            return self._buscar_tipo_en_pila(pila, token.lexema)
         return None
 
+    # =========================================================
+    # Utilidades
+    # =========================================================
     def _asignacion_valida(self, tipo_var, tipo_exp):
         if tipo_var == "full" and tipo_exp == "full":
             return True
@@ -195,32 +487,27 @@ class Analizador:
         return False
 
     def _insertar_error(self, tok, descripcion, errores_reportados):
-        """
-        Inserta un error sin reportar dos veces el MISMO token (el recorrido
-        de dos en dos visita cada operando del medio dos veces).
-        'errores_reportados' es un set con los id() de los tokens ya reportados.
-        """
-        if id(tok) in errores_reportados:
+        clave = (tok.lexema, tok.renglon)
+        if clave in errores_reportados:
             return
-        errores_reportados.add(id(tok))
+        errores_reportados.add(clave)
 
         self.contador_errores += 1
         self.resultado.errores.append(
             (f"ErrSem{self.contador_errores}", tok.lexema, tok.renglon, descripcion)
         )
 
-    # ---------------------------------------------------------
+    # =========================================================
     # Evaluación de expresiones
-    # ---------------------------------------------------------
-    def _evaluar_expresion(self, expresion, tipo_variable):
-        """Recorre la expresión y reporta TODOS los errores (sin duplicados)."""
+    # =========================================================
+    def _evaluar_expresion(self, expresion, tipo_variable, pila):
         if not expresion:
             return None
 
         errores_reportados = set()
 
         operando_actual_tok = expresion[0]
-        tipo_actual = self._obtener_tipo_token(operando_actual_tok)
+        tipo_actual = self._tipo_de_token(operando_actual_tok, pila)
         if tipo_actual is None:
             return None
 
@@ -234,7 +521,7 @@ class Analizador:
                 return tipo_actual
 
             operando_derecho_tok = expresion[i + 1]
-            tipo_derecho = self._obtener_tipo_token(operando_derecho_tok)
+            tipo_derecho = self._tipo_de_token(operando_derecho_tok, pila)
             if tipo_derecho is None:
                 i += 2
                 continue
@@ -270,7 +557,6 @@ class Analizador:
         return tipo_actual
 
     def _evaluar_operacion(self, variable, izq, op, der):
-        """Consulta la tabla de reglas semánticas."""
         clave = (variable, izq, op, der)
         if clave in REGLAS_ARITMETICAS:
             return True, REGLAS_ARITMETICAS[clave], []
@@ -279,10 +565,6 @@ class Analizador:
         return False, None, culpables
 
     def _determinar_culpables(self, variable, izq, op, der):
-        """
-        Culpable = todo lo que la regla del tipo de la variable de asignación
-        no permite: operando izquierdo, operador u operando derecho.
-        """
         regla = REGLAS.get(variable)
         if regla is None:
             return []
