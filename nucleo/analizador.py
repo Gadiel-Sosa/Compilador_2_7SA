@@ -14,7 +14,7 @@ class Resultado:
     def __init__(self):
         self.simbolos = []    # (lexema, tipo)
         self.errores = []     # (token, lexema, renglon, descripcion)
-
+        
 
 class Analizador:
     def __init__(self, tokens):
@@ -28,6 +28,8 @@ class Analizador:
         # Para la tabla de símbolos: cada nombre con su tipo "global" (el primero encontrado)
         self.simbolos_globales = {}
 
+        self.firmas_funciones = {}  # nombre_función: [tipo_param1, tipo_param2, ...]
+
     # =========================================================
     # API pública
     # =========================================================
@@ -37,6 +39,8 @@ class Analizador:
         self._llenar_tabla_simbolos()
         self._verificar_variables_indefinidas()
         self._verificar_asignaciones()
+        self._verificar_llamadas_funciones()
+        self._verificar_returns()
 
         # Ordenar errores por renglón
         self.resultado.errores.sort(key=lambda e: e[2])
@@ -91,22 +95,25 @@ class Analizador:
                     k = j + 1
 
                     # Función: tipo nombre ( ... )
+
                     if k < n and tokens[k].tipo == "delim" and tokens[k].lexema == "(":
                         if nombre not in self.pila_tipos[-1]:
                             self.pila_tipos[-1][nombre] = tipo_decl
                             if nombre not in self.simbolos_globales:
                                 self.simbolos_globales[nombre] = tipo_decl
-                        # Saltar paréntesis
-                        profundidad = 1
-                        k += 1
-                        while k < n and profundidad > 0:
-                            if tokens[k].tipo == "delim" and tokens[k].lexema == "(":
-                                profundidad += 1
-                            elif tokens[k].tipo == "delim" and tokens[k].lexema == ")":
-                                profundidad -= 1
+                        params, k = self._parse_parametros(tokens, k + 1, n)
+                        self.firmas_funciones[nombre] = [tipo_p for tipo_p, _ in params]
+                        if k < n and tokens[k].tipo == "delim" and tokens[k].lexema == "{":
+                            self.pila_tipos.append({})
+                            for tipo_p, tok_p in params:
+                                nombre_p = tok_p.lexema
+                                self.pila_tipos[-1][nombre_p] = tipo_p
+                                if nombre_p not in self.simbolos_globales:
+                                    self.simbolos_globales[nombre_p] = tipo_p
                             k += 1
                         i = k
-                        continue
+                        continue    
+                    
                     else:
                         # Variables — declaración normal
                         ids_declarados = [nombre]
@@ -181,14 +188,24 @@ class Analizador:
                     k = j + 1
 
                     # Función: saltar paréntesis
+
                     if k < n and tokens[k].tipo == "delim" and tokens[k].lexema == "(":
-                        profundidad = 1
-                        k += 1
-                        while k < n and profundidad > 0:
-                            if tokens[k].tipo == "delim" and tokens[k].lexema == "(":
-                                profundidad += 1
-                            elif tokens[k].tipo == "delim" and tokens[k].lexema == ")":
-                                profundidad -= 1
+                        params, k = self._parse_parametros(tokens, k + 1, n)
+                        if k < n and tokens[k].tipo == "delim" and tokens[k].lexema == "{":
+                            pila_ambitos.append({})
+                            nuevo_ambito = pila_ambitos[-1]
+                            for tipo_p, tok_p in params:
+                                nombre_p = tok_p.lexema
+                                if nombre_p in nuevo_ambito:
+                                    clave = (nombre_p, tok_p.renglon)
+                                    if clave not in errores_reportados:
+                                        errores_reportados.add(clave)
+                                        self.contador_errores += 1
+                                        self.resultado.errores.append(
+                                            (f"ErrSem{self.contador_errores}", nombre_p, tok_p.renglon, "Declaración duplicada")
+                                        )
+                                else:
+                                    nuevo_ambito[nombre_p] = True
                             k += 1
                         i = k
                         continue
@@ -295,13 +312,11 @@ class Analizador:
                     # ¿Es función? (id seguido de '(')
                     if k < n and tokens[k].tipo == "delim" and tokens[k].lexema == "(":
                         pila_ambitos[-1][nombre] = True
-                        profundidad = 1
-                        k += 1
-                        while k < n and profundidad > 0:
-                            if tokens[k].tipo == "delim" and tokens[k].lexema == "(":
-                                profundidad += 1
-                            elif tokens[k].tipo == "delim" and tokens[k].lexema == ")":
-                                profundidad -= 1
+                        params, k = self._parse_parametros(tokens, k + 1, n)
+                        if k < n and tokens[k].tipo == "delim" and tokens[k].lexema == "{":
+                            pila_ambitos.append({})
+                            for tipo_p, tok_p in params:
+                                pila_ambitos[-1][tok_p.lexema] = True
                             k += 1
                         i = k
                         continue
@@ -387,13 +402,11 @@ class Analizador:
                     if k < n and tokens[k].tipo == "delim" and tokens[k].lexema == "(":
                         if nombre not in pila_ambitos[-1]:
                             pila_ambitos[-1][nombre] = tipo_decl
-                        profundidad = 1
-                        k += 1
-                        while k < n and profundidad > 0:
-                            if tokens[k].tipo == "delim" and tokens[k].lexema == "(":
-                                profundidad += 1
-                            elif tokens[k].tipo == "delim" and tokens[k].lexema == ")":
-                                profundidad -= 1
+                        params, k = self._parse_parametros(tokens, k + 1, n)
+                        if k < n and tokens[k].tipo == "delim" and tokens[k].lexema == "{":
+                            pila_ambitos.append({})
+                            for tipo_p, tok_p in params:
+                                pila_ambitos[-1][tok_p.lexema] = tipo_p
                             k += 1
                         i = k
                         continue
@@ -577,3 +590,247 @@ class Analizador:
         if der not in regla["operandos"]:
             culpables.append("der")
         return culpables
+
+    def _parse_parametros(self, tokens, k, n):
+        """
+    A partir de k (justo después del '(' de una función), extrae los
+    parámetros como (tipo, token_id) y retorna (params, k) donde k
+    queda apuntando justo después del ')' que cierra.
+        """
+        params = []
+        profundidad = 1
+        while k < n and profundidad > 0:
+            t = tokens[k]
+            if t.tipo == "delim" and t.lexema == "(":
+                profundidad += 1
+                k += 1
+                continue
+            if t.tipo == "delim" and t.lexema == ")":
+                profundidad -= 1
+                k += 1
+                continue
+            if profundidad == 1 and t.tipo == "reservada" and t.lexema in ("full", "royal", "chain", "void"):
+                if k + 1 < n and tokens[k + 1].tipo == "id":
+                    params.append((t.lexema, tokens[k + 1]))
+                    k += 2
+                    continue
+            k += 1
+        return params, k
+
+
+    def _verificar_llamadas_funciones(self):
+        tokens = self.tokens
+        n = len(tokens)
+        pila_ambitos = [{}]
+        errores_reportados = set()
+        i = 0
+        while i < n:
+            tok = tokens[i]
+
+            if tok.tipo == "delim" and tok.lexema == "{":
+                pila_ambitos.append({})
+                i += 1
+                continue
+            if tok.tipo == "delim" and tok.lexema == "}":
+                if len(pila_ambitos) > 1:
+                    pila_ambitos.pop()
+                i += 1
+                continue
+
+            # Registrar declaraciones (variables, funciones y sus parámetros)
+            if tok.tipo == "reservada" and tok.lexema in ("full", "royal", "chain", "void"):
+                tipo_decl = tok.lexema
+                renglon_decl = tok.renglon
+                j = i + 1
+                if j < n and tokens[j].tipo == "id":
+                    nombre = tokens[j].lexema
+                    k = j + 1
+                    if k < n and tokens[k].tipo == "delim" and tokens[k].lexema == "(":
+                        pila_ambitos[-1][nombre] = tipo_decl
+                        params, k = self._parse_parametros(tokens, k + 1, n)
+                        if k < n and tokens[k].tipo == "delim" and tokens[k].lexema == "{":
+                            pila_ambitos.append({})
+                            for tipo_p, tok_p in params:
+                                pila_ambitos[-1][tok_p.lexema] = tipo_p
+                            k += 1
+                        i = k
+                        continue
+                    else:
+                        ids_declarados = [nombre]
+                        m = k
+                        while m < n:
+                            if tokens[m].renglon != renglon_decl:
+                                break
+                            if tokens[m].tipo == "delim" and tokens[m].lexema == ";":
+                                break
+                            if tokens[m].tipo == "id":
+                                ids_declarados.append(tokens[m].lexema)
+                            m += 1
+                        for var in ids_declarados:
+                            pila_ambitos[-1][var] = tipo_decl
+                        i = m
+                        continue
+                i += 1
+                continue
+
+            # Detectar llamada: id '(' que NO sea una declaración (ya filtrada arriba)
+            if (tok.tipo == "id" and i + 1 < n
+                    and tokens[i + 1].tipo == "delim" and tokens[i + 1].lexema == "("):
+                nombre_fn = tok.lexema
+                args = []
+                arg_actual = []
+                k = i + 2
+                profundidad = 1
+                while k < n and profundidad > 0:
+                    t = tokens[k]
+                    if t.tipo == "delim" and t.lexema == "(":
+                        profundidad += 1
+                        arg_actual.append(t)
+                        k += 1
+                        continue
+                    if t.tipo == "delim" and t.lexema == ")":
+                        profundidad -= 1
+                        if profundidad == 0:
+                            if arg_actual:
+                                args.append(arg_actual)
+                            k += 1
+                            break
+                        arg_actual.append(t)
+                        k += 1
+                        continue
+                    if t.tipo == "delim" and t.lexema == "," and profundidad == 1:
+                        args.append(arg_actual)
+                        arg_actual = []
+                        k += 1
+                        continue
+                    arg_actual.append(t)
+                    k += 1
+
+                if nombre_fn in self.firmas_funciones:
+                    firma = self.firmas_funciones[nombre_fn]
+                    if len(args) != len(firma):
+                        self._insertar_error(tok, "Número de argumentos incorrecto", errores_reportados)
+                    else:
+                        for tipo_param, arg_tokens in zip(firma, args):
+                            if len(arg_tokens) == 1:
+                                tipo_arg = self._tipo_de_token(arg_tokens[0], pila_ambitos)
+                                if tipo_arg is not None and not self._asignacion_valida(tipo_param, tipo_arg):
+                                    self._insertar_error(
+                                        arg_tokens[0],
+                                        f"Incompatibilidad de tipos, {tipo_param}",
+                                        errores_reportados
+                                    )
+                            elif arg_tokens:
+                                self._evaluar_expresion(arg_tokens, tipo_param, pila_ambitos)
+                i = k
+                continue
+
+            i += 1
+
+
+    def _verificar_returns(self):
+        tokens = self.tokens
+        n = len(tokens)
+        pila_ambitos = [{}]
+        pila_funcion_actual = [None]  # tipo de retorno de la función en cada nivel de {}
+        errores_reportados = set()
+        i = 0
+        while i < n:
+            tok = tokens[i]
+
+            if tok.tipo == "reservada" and tok.lexema in ("full", "royal", "chain", "void"):
+                tipo_decl = tok.lexema
+                renglon_decl = tok.renglon
+                j = i + 1
+                if j < n and tokens[j].tipo == "id":
+                    nombre = tokens[j].lexema
+                    k = j + 1
+                    if k < n and tokens[k].tipo == "delim" and tokens[k].lexema == "(":
+                        pila_ambitos[-1][nombre] = tipo_decl
+                        params, k = self._parse_parametros(tokens, k + 1, n)
+                        if k < n and tokens[k].tipo == "delim" and tokens[k].lexema == "{":
+                            pila_ambitos.append({})
+                            for tipo_p, tok_p in params:
+                                pila_ambitos[-1][tok_p.lexema] = tipo_p
+                            pila_funcion_actual.append(tipo_decl)
+                            k += 1
+                        i = k
+                        continue
+                    else:
+                        ids_declarados = [nombre]
+                        m = k
+                        while m < n:
+                            if tokens[m].renglon != renglon_decl:
+                                break
+                            if tokens[m].tipo == "delim" and tokens[m].lexema == ";":
+                                break
+                            if tokens[m].tipo == "id":
+                                ids_declarados.append(tokens[m].lexema)
+                            m += 1
+                        for var in ids_declarados:
+                            pila_ambitos[-1][var] = tipo_decl
+                        i = m
+                        continue
+                i += 1
+                continue
+
+            if tok.tipo == "delim" and tok.lexema == "{":
+                pila_ambitos.append({})
+                pila_funcion_actual.append(pila_funcion_actual[-1])
+                i += 1
+                continue
+            if tok.tipo == "delim" and tok.lexema == "}":
+                if len(pila_ambitos) > 1:
+                    pila_ambitos.pop()
+                    pila_funcion_actual.pop()
+                i += 1
+                continue
+
+            if tok.tipo == "reservada" and tok.lexema == "return":
+                tipo_funcion = pila_funcion_actual[-1]
+
+                j = i + 1
+                expresion = []
+                while j < n and tokens[j].lexema != ";":
+                    expresion.append(tokens[j])
+                    j += 1
+
+                if tipo_funcion is None:
+                    self._insertar_error(tok, "Return fuera de una función", errores_reportados)
+                    i = j + 1
+                    continue
+
+                if not expresion:
+                    if tipo_funcion != "void":
+                        self._insertar_error(
+                            tok,
+                            f"Error semántico, no hubo retorno tipo {tipo_funcion}",
+                            errores_reportados
+                        )
+                    i = j + 1
+                    continue
+
+                if tipo_funcion == "void":
+                    self._insertar_error(
+                        tok,
+                        f"Error semántico, no hubo retorno tipo {tipo_funcion}",
+                        errores_reportados
+                    )
+                    i = j + 1
+                    continue
+
+                if len(expresion) == 1:
+                    tipo_exp = self._tipo_de_token(expresion[0], pila_ambitos)
+                    if tipo_exp is not None and not self._asignacion_valida(tipo_funcion, tipo_exp):
+                        self._insertar_error(
+                            expresion[0],
+                            f"Error semántico, no hubo retorno tipo {tipo_funcion}",
+                            errores_reportados
+                        )
+                else:
+                    self._evaluar_expresion(expresion, tipo_funcion, pila_ambitos)
+
+                i = j + 1
+                continue
+
+            i += 1
