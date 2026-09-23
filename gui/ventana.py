@@ -81,10 +81,15 @@ class CompiladorGUI:
         )
         self.txt_codigo.pack(side="left", fill="both", expand=True)
 
-        self.txt_codigo.bind("<KeyRelease>", self.actualizar_numeros)
-        self.txt_codigo.bind("<MouseWheel>", self.actualizar_numeros)
-        self.txt_codigo.bind("<Button-1>", self.actualizar_numeros)
+        # ---------- Eventos para actualizar números de línea ----------
+        self.txt_codigo.bind("<KeyRelease>", self._programar_actualizacion)
+        self.txt_codigo.bind("<MouseWheel>", self._programar_actualizacion)
+        self.txt_codigo.bind("<Button-1>", self._programar_actualizacion)
+        self.txt_codigo.bind("<ButtonRelease-1>", self._programar_actualizacion)
         self.txt_codigo.bind("<<Modified>>", self.on_modified)
+        self.txt_codigo.bind("<FocusIn>", self._programar_actualizacion)
+        self.txt_codigo.bind("<FocusOut>", self._programar_actualizacion)
+        self.txt_codigo.bind("<Configure>", self._programar_actualizacion)
 
         # ---------- Tablas ----------
         frame_tablas = tk.Frame(main_frame, bg="#f0f0f0")
@@ -141,7 +146,9 @@ class CompiladorGUI:
 
     # ---------------------------------------------------------
     def actualizar_numeros(self, event=None):
+        """Redibuja los números de línea del editor."""
         self.lineas_canvas.delete("all")
+
         i = self.txt_codigo.index("@0,0")
         while True:
             dline = self.txt_codigo.dlineinfo(i)
@@ -155,9 +162,13 @@ class CompiladorGUI:
             )
             i = self.txt_codigo.index(f"{i}+1line")
 
+    def _programar_actualizacion(self, event=None):
+        """Programa la actualización de números tras el siguiente ciclo de eventos."""
+        self.root.after_idle(self.actualizar_numeros)
+
     def on_modified(self, event):
         self.txt_codigo.edit_modified(False)
-        self.actualizar_numeros()
+        self._programar_actualizacion()
 
     # ---------------------------------------------------------
     def limpiar_tablas(self):
