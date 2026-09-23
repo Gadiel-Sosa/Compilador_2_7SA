@@ -40,6 +40,8 @@ class Analizador:
 
         # Firmas de funciones: {nombre: [tipo_param1, tipo_param2, ...]}
         self.firmas_funciones = {}
+        
+        self.tipos_retorno_funciones = {}  # {nombre_función: tipo_retorno}
 
     # =========================================================
     # API pública

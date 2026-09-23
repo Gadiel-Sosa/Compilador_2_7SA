@@ -102,9 +102,42 @@ def verificar_asignaciones(analizador):
                             errores_reportados
                         )
                 else:
-                    evaluar_expresion(analizador, expresion, tipo_variable, pila_ambitos)
+                    nombre_fn_llamada = _es_llamada_completa(expresion)
+                    if nombre_fn_llamada is not None and \
+                            nombre_fn_llamada in analizador.tipos_retorno_funciones:
+                        tipo_retorno = analizador.tipos_retorno_funciones[nombre_fn_llamada]
+                        if not asignacion_valida(tipo_variable, tipo_retorno):
+                            errores_reportados = set()
+                            analizador._insertar_error(
+                                expresion[0],
+                                f"Incompatibilidad de tipos, {tipo_variable}",
+                                errores_reportados
+                            )
+                    else:
+                        evaluar_expresion(analizador, expresion, tipo_variable, pila_ambitos)
 
             i += 2
             continue
 
         i += 1
+        
+        
+def _es_llamada_completa(expresion):
+    """Devuelve el nombre de función si expresion es exactamente id '(' ... ')'."""
+    if len(expresion) < 3:
+        return None
+    if expresion[0].tipo != "id":
+        return None
+    if not (expresion[1].tipo == "delim" and expresion[1].lexema == "("):
+        return None
+    if not (expresion[-1].tipo == "delim" and expresion[-1].lexema == ")"):
+        return None
+    profundidad = 0
+    for tok in expresion[1:]:
+        if tok.tipo == "delim" and tok.lexema == "(":
+            profundidad += 1
+        elif tok.tipo == "delim" and tok.lexema == ")":
+            profundidad -= 1
+            if profundidad == 0 and tok is not expresion[-1]:
+                return None
+    return expresion[0].lexema

@@ -45,7 +45,7 @@ def parse_parametros(tokens, k, n):
             profundidad -= 1
             k += 1
             continue
-        if profundidad == 1 and t.tipo == "reservada" and t.lexema in ("full", "royal", "chain", "void"):
+        if profundidad == 1 and t.tipo == "reservada" and t.lexema in ("full", "royal", "chain"):
             if k + 1 < n and tokens[k + 1].tipo == "id":
                 params.append((t.lexema, tokens[k + 1]))
                 k += 2

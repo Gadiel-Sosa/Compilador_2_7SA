@@ -43,6 +43,8 @@ def inferir_tipos_declarados(analizador):
 
                     params, k = parse_parametros(tokens, k + 1, n)
                     analizador.firmas_funciones[nombre] = [tipo_p for tipo_p, _ in params]
+                    analizador.tipos_retorno_funciones[nombre] = tipo_decl
+                    
 
                     if k < n and tokens[k].tipo == "delim" and tokens[k].lexema == "{":
                         analizador.pila_tipos.append({})
