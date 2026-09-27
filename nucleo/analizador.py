@@ -18,6 +18,7 @@ from nucleo.indefinidos import verificar_indefinidos
 from nucleo.asignaciones import verificar_asignaciones
 from nucleo.llamadas import verificar_llamadas
 from nucleo.returns import verificar_returns
+from nucleo.condiciones import verificar_condiciones_if
 
 
 class Resultado:
@@ -54,6 +55,7 @@ class Analizador:
         verificar_asignaciones(self)
         verificar_llamadas(self)
         verificar_returns(self)
+        verificar_condiciones_if(self)
 
         # Ordenar errores por renglón
         self.resultado.errores.sort(key=lambda e: e[2])

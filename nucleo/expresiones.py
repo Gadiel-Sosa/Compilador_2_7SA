@@ -5,6 +5,34 @@ Evaluación de expresiones aritméticas y determinación de culpables.
 from nucleo.reglas import REGLAS_ARITMETICAS, REGLAS
 from nucleo.contexto import tipo_de_token
 
+def _leer_operando(analizador, expresion, idx, pila):
+    """
+    Lee el operando que comienza en expresion[idx].
+    Si es una llamada a función (id '(' ... ')'), salta hasta su ')' de cierre
+    y resuelve el tipo con el tipo de retorno de la función.
+    Devuelve (tipo, token_representativo, siguiente_idx).
+    """
+    tok = expresion[idx]
+    if (tok.tipo == "id" and idx + 1 < len(expresion)
+            and expresion[idx + 1].tipo == "delim" and expresion[idx + 1].lexema == "("):
+        nombre_fn = tok.lexema
+        j = idx + 1
+        profundidad = 0
+        while j < len(expresion):
+            t = expresion[j]
+            if t.tipo == "delim" and t.lexema == "(":
+                profundidad += 1
+            elif t.tipo == "delim" and t.lexema == ")":
+                profundidad -= 1
+                if profundidad == 0:
+                    j += 1
+                    break
+            j += 1
+        tipo = analizador.tipos_retorno_funciones.get(nombre_fn)
+        return tipo, tok, j
+    else:
+        tipo = tipo_de_token(tok, pila)
+        return tipo, tok, idx + 1
 
 def evaluar_expresion(analizador, expresion, tipo_variable, pila):
     """Recorre la expresión y reporta TODOS los errores (sin duplicados)."""
@@ -13,12 +41,10 @@ def evaluar_expresion(analizador, expresion, tipo_variable, pila):
 
     errores_reportados = set()
 
-    operando_actual_tok = expresion[0]
-    tipo_actual = tipo_de_token(operando_actual_tok, pila)
+    tipo_actual, operando_actual_tok, i = _leer_operando(analizador, expresion, 0, pila)
     if tipo_actual is None:
         return None
 
-    i = 1
     while i < len(expresion):
         operador = expresion[i]
         if operador.tipo != "op":
@@ -27,10 +53,9 @@ def evaluar_expresion(analizador, expresion, tipo_variable, pila):
         if i + 1 >= len(expresion):
             return tipo_actual
 
-        operando_derecho_tok = expresion[i + 1]
-        tipo_derecho = tipo_de_token(operando_derecho_tok, pila)
+        tipo_derecho, operando_derecho_tok, siguiente_i = _leer_operando(analizador, expresion, i + 1, pila)
         if tipo_derecho is None:
-            i += 2
+            i = siguiente_i
             continue
 
         es_valida, tipo_resultado, culpables = evaluar_operacion(
@@ -54,12 +79,12 @@ def evaluar_expresion(analizador, expresion, tipo_variable, pila):
 
             tipo_actual = tipo_variable
             operando_actual_tok = operando_derecho_tok
-            i += 2
+            i = siguiente_i
             continue
 
         tipo_actual = tipo_resultado
         operando_actual_tok = operando_derecho_tok
-        i += 2
+        i = siguiente_i
 
     return tipo_actual
 
