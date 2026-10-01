@@ -104,16 +104,13 @@ def verificar_returns(analizador):
                 i = j + 1
                 continue
 
-            if len(expresion) == 1:
-                tipo_exp = tipo_de_token(expresion[0], pila_ambitos)
-                if tipo_exp is not None and not asignacion_valida(tipo_funcion, tipo_exp):
-                    analizador._insertar_error(
-                        expresion[0],
-                        f"Error semántico, no hubo retorno tipo {tipo_funcion}",
-                        errores_reportados
-                    )
-            else:
-                evaluar_expresion(analizador, expresion, tipo_funcion, pila_ambitos)
+            tipo_exp = evaluar_expresion(analizador, expresion, tipo_funcion, pila_ambitos)
+            if tipo_exp is not None and not asignacion_valida(tipo_funcion, tipo_exp):
+                analizador._insertar_error(
+                    expresion[0],
+                    f"Error semántico, no hubo retorno tipo {tipo_funcion}",
+                    errores_reportados
+                )
 
             i = j + 1
             continue

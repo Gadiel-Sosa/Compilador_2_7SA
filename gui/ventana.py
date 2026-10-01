@@ -178,6 +178,7 @@ class CompiladorGUI:
             self.tabla_errores.delete(item)
 
     # ---------------------------------------------------------
+
     def ejecutar(self):
         codigo = self.txt_codigo.get("1.0", tk.END).strip()
         self.limpiar_tablas()
@@ -195,11 +196,34 @@ class CompiladorGUI:
 
         # 3. Volcar símbolos a la tabla
         for lexema, tipo in resultado.simbolos:
-            self.tabla_simbolos.insert("", "end", values=(lexema, tipo))
+            self.tabla_simbolos.insert(
+                "",
+                "end",
+                values=(lexema, tipo)
+            )
 
-        # 4. Volcar errores a la tabla
+        # 4. Volcar errores léxicos a la tabla
+        # for error in tokenizador.errores:
+        #     self.tabla_errores.insert(
+        #         "",
+        #         "end",
+        #         values=(
+        #             error.token,
+        #             error.lexema,
+        #             error.renglon,
+        #             error.descripcion
+        #         )
+        #     )
+
+        # 5. Volcar errores semánticos a la tabla
         for token, lexema, renglon, descripcion in resultado.errores:
             self.tabla_errores.insert(
-                "", "end",
-                values=(token, lexema, renglon, descripcion)
+                "",
+                "end",
+                values=(
+                    token,
+                    lexema,
+                    renglon,
+                    descripcion
+                )
             )

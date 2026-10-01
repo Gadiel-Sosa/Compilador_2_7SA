@@ -75,7 +75,7 @@ def verificar_indefinidos(analizador):
                 )
                 descripcion = "Función indefinida" if es_funcion else "Variable indefinida"
 
-                clave = (tok.lexema, tok.renglon)
+                clave = (id(tok), descripcion)
                 if clave not in errores_reportados:
                     errores_reportados.add(clave)
                     analizador.contador_errores += 1

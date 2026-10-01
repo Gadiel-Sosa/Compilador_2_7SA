@@ -43,7 +43,8 @@ def evaluar_expresion(analizador, expresion, tipo_variable, pila):
 
     tipo_actual, operando_actual_tok, i = _leer_operando(analizador, expresion, 0, pila)
     if tipo_actual is None:
-        return None
+        tipo_actual = tipo_variable
+        operando_actual_tok = expresion[0]
 
     while i < len(expresion):
         operador = expresion[i]

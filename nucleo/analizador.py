@@ -72,11 +72,10 @@ class Analizador:
     # Helper compartido por todas las fases
     # =========================================================
     def _insertar_error(self, tok, descripcion, errores_reportados):
-        clave = (tok.lexema, tok.renglon)
+        clave = (tok.renglon, tok.lexema, tok.tipo, descripcion)
         if clave in errores_reportados:
             return
         errores_reportados.add(clave)
-
         self.contador_errores += 1
         self.resultado.errores.append(
             (f"ErrSem{self.contador_errores}", tok.lexema, tok.renglon, descripcion)
