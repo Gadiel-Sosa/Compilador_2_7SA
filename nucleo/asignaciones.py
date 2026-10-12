@@ -16,6 +16,7 @@ def verificar_asignaciones(analizador):
     n = len(tokens)
 
     pila_ambitos = [{}]
+    errores_reportados = set()   # <-- deduplicación global de la fase
     i = 0
     while i < n:
         tok = tokens[i]
@@ -91,11 +92,11 @@ def verificar_asignaciones(analizador):
                     j += 1
 
                 if len(expresion) == 1:
+                    # Expresión de un solo token
                     tokk = expresion[0]
                     tipo_expresion = tipo_de_token(tokk, pila_ambitos)
                     if tipo_expresion is not None and \
                             not asignacion_valida(tipo_variable, tipo_expresion):
-                        errores_reportados = set()
                         analizador._insertar_error(
                             tokk,
                             f"Incompatibilidad de tipos, {tipo_variable}",
@@ -105,23 +106,33 @@ def verificar_asignaciones(analizador):
                     nombre_fn_llamada = _es_llamada_completa(expresion)
                     if nombre_fn_llamada is not None and \
                             nombre_fn_llamada in analizador.tipos_retorno_funciones:
+                        # Llamada simple: id(...)
                         tipo_retorno = analizador.tipos_retorno_funciones[nombre_fn_llamada]
                         if not asignacion_valida(tipo_variable, tipo_retorno):
-                            errores_reportados = set()
                             analizador._insertar_error(
                                 expresion[0],
                                 f"Incompatibilidad de tipos, {tipo_variable}",
                                 errores_reportados
                             )
                     else:
-                        evaluar_expresion(analizador, expresion, tipo_variable, pila_ambitos)
+                        # Expresión compleja: evaluar y comparar tipo resultante
+                        tipo_resultado = evaluar_expresion(
+                            analizador, expresion, tipo_variable, pila_ambitos
+                        )
+                        if tipo_resultado is not None and \
+                                not asignacion_valida(tipo_variable, tipo_resultado):
+                            analizador._insertar_error(
+                                expresion[0],
+                                f"Incompatibilidad de tipos, {tipo_variable}",
+                                errores_reportados
+                            )
 
             i += 2
             continue
 
         i += 1
-        
-        
+
+
 def _es_llamada_completa(expresion):
     """Devuelve el nombre de función si expresion es exactamente id '(' ... ')'."""
     if len(expresion) < 3:
@@ -133,11 +144,11 @@ def _es_llamada_completa(expresion):
     if not (expresion[-1].tipo == "delim" and expresion[-1].lexema == ")"):
         return None
     profundidad = 0
-    for tok in expresion[1:]:
+    for idx, tok in enumerate(expresion[1:], start=1):
         if tok.tipo == "delim" and tok.lexema == "(":
             profundidad += 1
         elif tok.tipo == "delim" and tok.lexema == ")":
             profundidad -= 1
-            if profundidad == 0 and tok is not expresion[-1]:
+            if profundidad == 0 and idx != len(expresion) - 1:
                 return None
     return expresion[0].lexema
