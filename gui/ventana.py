@@ -1,5 +1,5 @@
 import tkinter as tk
-from tkinter import ttk, scrolledtext
+from tkinter import ttk, scrolledtext, filedialog, messagebox
 from nucleo.obtener_tokens import Tokenizador
 from nucleo.analizador import Analizador
 
@@ -42,6 +42,7 @@ class CompiladorGUI:
         )
         titulo.pack(side="left")
 
+        # ---------- Botón EJECUTAR ----------
         self.btn_run = tk.Button(
             barra_superior, text="EJECUTAR",
             font=("Arial", 11, "bold"),
@@ -54,6 +55,20 @@ class CompiladorGUI:
 
         self.btn_run.bind("<Enter>", lambda e: self.btn_run.configure(bg="#3aa862"))
         self.btn_run.bind("<Leave>", lambda e: self.btn_run.configure(bg="#2d8a4e"))
+
+        # ---------- Botón EXPORTAR TRIPLO ----------
+        self.btn_export = tk.Button(
+            barra_superior, text="EXPORTAR TRIPLO",
+            font=("Arial", 11, "bold"),
+            bg="#2c3e50", fg="white",
+            activebackground="#34495e", activeforeground="white",
+            padx=20, pady=6, bd=0, relief="flat",
+            cursor="hand2", command=self.exportar_triplo
+        )
+        self.btn_export.pack(side="right", padx=(0, 10))
+
+        self.btn_export.bind("<Enter>", lambda e: self.btn_export.configure(bg="#34495e"))
+        self.btn_export.bind("<Leave>", lambda e: self.btn_export.configure(bg="#2c3e50"))
 
         # ---------- Editor ----------
         frame_editor = tk.LabelFrame(
@@ -202,20 +217,7 @@ class CompiladorGUI:
                 values=(lexema, tipo)
             )
 
-        # 4. Volcar errores léxicos a la tabla
-        # for error in tokenizador.errores:
-        #     self.tabla_errores.insert(
-        #         "",
-        #         "end",
-        #         values=(
-        #             error.token,
-        #             error.lexema,
-        #             error.renglon,
-        #             error.descripcion
-        #         )
-        #     )
-
-        # 5. Volcar errores semánticos a la tabla
+        # 4. Volcar errores semánticos a la tabla
         for token, lexema, renglon, descripcion in resultado.errores:
             self.tabla_errores.insert(
                 "",
@@ -227,3 +229,55 @@ class CompiladorGUI:
                     descripcion
                 )
             )
+
+    # ---------------------------------------------------------
+    def exportar_triplo(self):
+        """Genera y exporta el triplo a CSV y XLSX."""
+        from nucleo.triplos import generar_triplos
+        from nucleo.exportar import exportar_ambos
+
+        codigo = self.txt_codigo.get("1.0", tk.END).strip()
+        if not codigo:
+            messagebox.showwarning("Sin código", "Escribe algo de código primero.")
+            return
+
+        # 1. Tokenizar y analizar (para tener tokens y símbolos)
+        tokenizador = Tokenizador(codigo)
+        tokens = tokenizador.tokenizar()
+        analizador = Analizador(tokens)
+        analizador.analizar()
+
+        # 2. Generar triplos
+        try:
+            filas, catalogo = generar_triplos(analizador)
+        except Exception as e:
+            messagebox.showerror("Error al generar triplos", str(e))
+            return
+
+        # 3. Elegir ruta base
+        ruta_base = filedialog.asksaveasfilename(
+            title="Guardar triplo como",
+            defaultextension=".xlsx",
+            filetypes=[
+                ("Excel", "*.xlsx"),
+                ("CSV", "*.csv"),
+                ("Todos los archivos", "*.*")
+            ]
+        )
+        if not ruta_base:
+            return
+
+        # 4. Exportar ambos
+        try:
+            ruta_csv, ruta_xlsx = exportar_ambos(filas, catalogo, ruta_base)
+        except ImportError as e:
+            messagebox.showerror("Librería faltante", str(e))
+            return
+        except Exception as e:
+            messagebox.showerror("Error al exportar", str(e))
+            return
+
+        messagebox.showinfo(
+            "Exportación exitosa",
+            f"Archivos generados:\n\n{ruta_csv}\n{ruta_xlsx}"
+        )
