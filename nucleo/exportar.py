@@ -20,12 +20,6 @@ def exportar_csv(filas, catalogo, ruta_csv):
                 fila.fuente or "",
                 fila.operador or ""
             ])
-        # Leyenda
-        writer.writerow([])
-        writer.writerow(["# LEYENDA DE TOKENS"])
-        writer.writerow(["Token", "Lexema", "Categoría"])
-        for id_sim, lexema, categoria in catalogo.leyenda():
-            writer.writerow([id_sim, lexema, categoria])
 
 
 def exportar_excel(filas, catalogo, ruta_xlsx):
@@ -94,26 +88,6 @@ def exportar_excel(filas, catalogo, ruta_xlsx):
     ws.column_dimensions["B"].width = 16
     ws.column_dimensions["C"].width = 16
     ws.column_dimensions["D"].width = 14
-
-    # ---------- Hoja 2: Leyenda ----------
-    ws2 = wb.create_sheet("Leyenda")
-    encabezados2 = ["Token", "Lexema", "Categoría"]
-    for col, texto in enumerate(encabezados2, start=1):
-        celda = ws2.cell(row=1, column=col, value=texto)
-        celda.font = fuente_encabezado
-        celda.fill = fondo_encabezado
-        celda.alignment = centrado
-        celda.border = borde
-
-    for idx, (id_sim, lexema, categoria) in enumerate(catalogo.leyenda(), start=2):
-        for col, valor in enumerate([id_sim, lexema, categoria], start=1):
-            celda = ws2.cell(row=idx, column=col, value=valor)
-            celda.border = borde
-            celda.alignment = centrado
-
-    ws2.column_dimensions["A"].width = 12
-    ws2.column_dimensions["B"].width = 20
-    ws2.column_dimensions["C"].width = 25
 
     wb.save(ruta_xlsx)
 
