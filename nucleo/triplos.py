@@ -68,8 +68,20 @@ class GeneradorTriplos:
     def _generar_expresion_asignacion(self, id_var, expresion):
         if not expresion:
             return
+
         postfijo = self._a_postfijo(expresion)
-        temporal_final = self._evaluar_postfijo(postfijo)
+
+        if len(postfijo) == 1:
+            valor = postfijo[0].lexema
+            t = self.catalogo.nuevo_temporal()
+            self._emitir(
+                objeto=t, fuente=valor, operador="=",
+                descripcion=f"{t} = {valor}", tipo="asignacion"
+            )
+            temporal_final = t
+        else:
+            temporal_final = self._evaluar_postfijo(postfijo)
+
         self._emitir(
             objeto=id_var,
             fuente=temporal_final,
@@ -77,6 +89,8 @@ class GeneradorTriplos:
             descripcion=f"{id_var} = {temporal_final}",
             tipo="asignacion"
         )
+        
+        self.catalogo.reiniciar_temporales()
 
     # ==========================================================
     # Postfijo (shunting-yard)
@@ -315,6 +329,7 @@ class GeneradorTriplos:
                                    descripcion="", tipo="salto_cond")
         fila_false = self._emitir(objeto="", fuente="FALSE", operador=None,
                                     descripcion="", tipo="salto_cond")
+        self.catalogo.reiniciar_temporales()
         return [fila_true], [fila_false]
 
     # ==========================================================
