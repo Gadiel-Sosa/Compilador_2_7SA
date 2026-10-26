@@ -162,8 +162,13 @@ class GeneradorTriplos:
 
                 if izq_es_temp:
                     t = izq
-                elif der_es_temp:
-                    t = der
+                    self._emitir(
+                        objeto=t,
+                        fuente=der,
+                        operador=tok.lexema,
+                        descripcion=f"{t} = {t} {tok.lexema} {der}",
+                        tipo=self._tipo_fila_de_operador(tok.lexema)
+                    )
                 else:
                     t = self.catalogo.nuevo_temporal()
                     self._emitir(
@@ -173,14 +178,13 @@ class GeneradorTriplos:
                         descripcion=f"{t} = {izq}",
                         tipo="asignacion"
                     )
-
-                self._emitir(
-                    objeto=t,
-                    fuente=der,
-                    operador=tok.lexema,
-                    descripcion=f"{t} = {t} {tok.lexema} {der}",
-                    tipo=self._tipo_fila_de_operador(tok.lexema)
-                )
+                    self._emitir(
+                        objeto=t,
+                        fuente=der,
+                        operador=tok.lexema,
+                        descripcion=f"{t} = {t} {tok.lexema} {der}",
+                        tipo=self._tipo_fila_de_operador(tok.lexema)
+                    )
 
                 pila.append((t, True))
 
