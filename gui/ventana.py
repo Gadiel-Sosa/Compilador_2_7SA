@@ -2,6 +2,7 @@ import tkinter as tk
 from tkinter import ttk, scrolledtext, filedialog, messagebox
 from nucleo.obtener_tokens import Tokenizador
 from nucleo.analizador import Analizador
+import os    
  
  
 class CompiladorGUI:
@@ -57,18 +58,18 @@ class CompiladorGUI:
         self.btn_run.bind("<Leave>", lambda e: self.btn_run.configure(bg="#2d8a4e"))
  
         # ---------- Botón EXPORTAR TRIPLO ----------
-        self.btn_export = tk.Button(
-            barra_superior, text="EXPORTAR TRIPLO",
-            font=("Arial", 11, "bold"),
-            bg="#2c3e50", fg="white",
-            activebackground="#34495e", activeforeground="white",
-            padx=20, pady=6, bd=0, relief="flat",
-            cursor="hand2", command=self.exportar_triplo
-        )
-        self.btn_export.pack(side="right", padx=(0, 10))
+        # self.btn_export = tk.Button(
+        #     barra_superior, text="EXPORTAR TRIPLO",
+        #     font=("Arial", 11, "bold"),
+        #     bg="#2c3e50", fg="white",
+        #     activebackground="#34495e", activeforeground="white",
+        #     padx=20, pady=6, bd=0, relief="flat",
+        #     cursor="hand2", command=self.exportar_triplo
+        # )
+        # self.btn_export.pack(side="right", padx=(0, 10))
  
-        self.btn_export.bind("<Enter>", lambda e: self.btn_export.configure(bg="#34495e"))
-        self.btn_export.bind("<Leave>", lambda e: self.btn_export.configure(bg="#2c3e50"))
+        # self.btn_export.bind("<Enter>", lambda e: self.btn_export.configure(bg="#34495e"))
+        # self.btn_export.bind("<Leave>", lambda e: self.btn_export.configure(bg="#2c3e50"))
  
         # ---------- Editor ----------
         frame_editor = tk.LabelFrame(
@@ -197,83 +198,119 @@ class CompiladorGUI:
     def ejecutar(self):
         codigo = self.txt_codigo.get("1.0", tk.END).strip()
         self.limpiar_tablas()
- 
+
         if not codigo:
             return
- 
+
         # 1. Tokenizar
         tokenizador = Tokenizador(codigo)
         tokens = tokenizador.tokenizar()
- 
+
         # 2. Analizar
         analizador = Analizador(tokens)
         resultado = analizador.analizar()
- 
+
         # 3. Volcar símbolos a la tabla
         for lexema, tipo in resultado.simbolos:
-            self.tabla_simbolos.insert(
-                "",
-                "end",
-                values=(lexema, tipo)
-            )
- 
-        # 4. Volcar errores semánticos a la tabla
+            self.tabla_simbolos.insert("", "end", values=(lexema, tipo))
+
+        # 4. Volcar errores a la tabla
         for token, lexema, renglon, descripcion in resultado.errores:
             self.tabla_errores.insert(
-                "",
-                "end",
-                values=(
-                    token,
-                    lexema,
-                    renglon,
-                    descripcion
-                )
+                "", "end", values=(token, lexema, renglon, descripcion)
             )
- 
-    # ---------------------------------------------------------
-    def exportar_triplo(self):
-        """Genera y exporta el triplo a CSV."""
+
+        # 5. Generar triplos
         from nucleo.triplos import generar_triplos
         from nucleo.exportar import exportar_csv
- 
-        codigo = self.txt_codigo.get("1.0", tk.END).strip()
-        if not codigo:
-            messagebox.showwarning("Sin código", "Escribe algo de código primero.")
-            return
- 
-        # 1. Tokenizar y analizar (para tener tokens y símbolos)
-        tokenizador = Tokenizador(codigo)
-        tokens = tokenizador.tokenizar()
-        analizador = Analizador(tokens)
-        analizador.analizar()
- 
-        # 2. Generar triplos
+
         try:
             filas, catalogo = generar_triplos(analizador)
         except Exception as e:
             messagebox.showerror("Error al generar triplos", str(e))
             return
- 
-        # 3. Elegir ruta
-        ruta_csv = filedialog.asksaveasfilename(
-            title="Guardar triplo como",
-            defaultextension=".csv",
-            filetypes=[
-                ("CSV", "*.csv"),
-                ("Todos los archivos", "*.*")
-            ]
+
+        # 6. Preguntar dónde guardar
+        guardar_dentro = messagebox.askyesno(
+            "Guardar CSV",
+            "¿Guardar triplo.csv dentro del proyecto (carpeta csv/)?\n\n"
+            "Sí  → <proyecto>/csv/triplo.csv\n"
+            "No → elegir otra ubicación"
         )
-        if not ruta_csv:
-            return
- 
-        # 4. Exportar
+
+        if guardar_dentro:
+            base_dir = os.path.dirname(os.path.abspath(__file__))
+            carpeta_csv = os.path.join(base_dir, "csv")
+            os.makedirs(carpeta_csv, exist_ok=True)
+            ruta_csv = os.path.join(carpeta_csv, "triplo.csv")
+        else:
+            ruta_csv = filedialog.asksaveasfilename(
+                title="Guardar triplo como",
+                defaultextension=".csv",
+                initialfile="triplo.csv",
+                filetypes=[
+                    ("CSV", "*.csv"),
+                    ("Todos los archivos", "*.*")
+                ]
+            )
+            if not ruta_csv:
+                return  # el usuario canceló
+
+        # 7. Exportar
         try:
             exportar_csv(filas, catalogo, ruta_csv)
         except Exception as e:
             messagebox.showerror("Error al exportar", str(e))
             return
- 
+
         messagebox.showinfo(
             "Exportación exitosa",
             f"Archivo generado:\n\n{ruta_csv}"
         )
+    # ---------------------------------------------------------
+    # def exportar_triplo(self):
+    #     """Genera y exporta el triplo a CSV."""
+    #     from nucleo.triplos import generar_triplos
+    #     from nucleo.exportar import exportar_csv
+ 
+    #     codigo = self.txt_codigo.get("1.0", tk.END).strip()
+    #     if not codigo:
+    #         messagebox.showwarning("Sin código", "Escribe algo de código primero.")
+    #         return
+ 
+    #     # 1. Tokenizar y analizar (para tener tokens y símbolos)
+    #     tokenizador = Tokenizador(codigo)
+    #     tokens = tokenizador.tokenizar()
+    #     analizador = Analizador(tokens)
+    #     analizador.analizar()
+ 
+    #     # 2. Generar triplos
+    #     try:
+    #         filas, catalogo = generar_triplos(analizador)
+    #     except Exception as e:
+    #         messagebox.showerror("Error al generar triplos", str(e))
+    #         return
+ 
+    #     # 3. Elegir ruta
+    #     ruta_csv = filedialog.asksaveasfilename(
+    #         title="Guardar triplo como",
+    #         defaultextension=".csv",
+    #         filetypes=[
+    #             ("CSV", "*.csv"),
+    #             ("Todos los archivos", "*.*")
+    #         ]
+    #     )
+    #     if not ruta_csv:
+    #         return
+ 
+    #     # 4. Exportar
+    #     try:
+    #         exportar_csv(filas, catalogo, ruta_csv)
+    #     except Exception as e:
+    #         messagebox.showerror("Error al exportar", str(e))
+    #         return
+ 
+    #     messagebox.showinfo(
+    #         "Exportación exitosa",
+    #         f"Archivo generado:\n\n{ruta_csv}"
+    #     )
