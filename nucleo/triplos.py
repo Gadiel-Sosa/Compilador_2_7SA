@@ -6,6 +6,8 @@ Reglas:
   - Jerarquía: ( ) > * / > + - > < > <= >= == != > && > || > =
   - Reutilización de temporales.
   - Backpatching para if / if-else con saltos TRUE/FALSE y JMP.
+  - Funciones: JMP de salto al definir, JMP de retorno, asignación
+    de argumentos a parámetros y recepción del valor retornado.
 """
 
 
@@ -19,6 +21,9 @@ class Fila:
         self.descripcion = descripcion
         self.tipo_fila = tipo_fila
 
+    def __repr__(self):
+        return f"Fila({self.numero}, obj={self.objeto!r}, fte={self.fuente!r}, op={self.operador!r})"
+
 
 class GeneradorTriplos:
     def __init__(self, tokens, catalogo):
@@ -26,6 +31,8 @@ class GeneradorTriplos:
         self.catalogo = catalogo
         self.filas = []
         self.contador_filas = 0
+        # nombre -> {"inicio_cuerpo", "jmp_retorno", "var_retorno", "jmp_salida"}
+        self.funciones = {}
 
     # ==========================================================
     # API pública
@@ -35,6 +42,11 @@ class GeneradorTriplos:
         n = len(self.tokens)
         while i < n:
             tok = self.tokens[i]
+
+            # Definición de función: tipo id ( ... ) { ... }
+            if self._es_definicion_funcion(i):
+                i = self._procesar_definicion_funcion(i)
+                continue
 
             if tok.tipo == "reservada" and tok.lexema == "if":
                 i = self._procesar_if(i)
@@ -52,6 +64,89 @@ class GeneradorTriplos:
         return self.filas
 
     # ==========================================================
+    # Detección de definición de función
+    # ==========================================================
+    def _es_definicion_funcion(self, i):
+        toks = self.tokens
+        n = len(toks)
+        if i >= n:
+            return False
+        if not (toks[i].tipo == "reservada" and toks[i].lexema in ("full", "royal", "chain", "void")):
+            return False
+        if i + 1 >= n or toks[i + 1].tipo != "id":
+            return False
+        # El nombre no debe estar en medio de una llamada (id seguido de '=')
+        if i + 2 >= n or not (toks[i + 2].tipo == "delim" and toks[i + 2].lexema == "("):
+            return False
+        # Descartar declaraciones con inicialización: tipo id = ...
+        return True
+
+    def _procesar_definicion_funcion(self, i):
+        """
+        Genera:
+          fila JMP  -> salto sobre el cuerpo (al final de la función)
+          [cuerpo de la función]
+          fila JMP  -> retorno (parchada al final del cuerpo)
+        Guarda metadatos en self.funciones.
+        """
+        tokens = self.tokens
+        n = len(tokens)
+
+        tipo_retorno = tokens[i].lexema
+        nombre_fn = tokens[i + 1].lexema
+
+        # 1) JMP de salto sobre la función (se parcha luego)
+        fila_jmp_salida = self._emitir(
+            objeto="", fuente=None, operador="JMP",
+            descripcion="", tipo="salto_incond"
+        )
+
+        # 2) Saltar parámetros hasta ')' que cierra la firma
+        k = i + 2  # apunta a '('
+        params = []
+        profundidad = 0
+        while k < n:
+            t = tokens[k]
+            if t.tipo == "delim" and t.lexema == "(":
+                profundidad += 1
+            elif t.tipo == "delim" and t.lexema == ")":
+                profundidad -= 1
+                if profundidad == 0:
+                    k += 1
+                    break
+            elif profundidad == 1 and t.tipo == "reservada" and t.lexema in ("full", "royal", "chain"):
+                if k + 1 < n and tokens[k + 1].tipo == "id":
+                    params.append(tokens[k + 1].lexema)
+            k += 1
+
+        # 3) Cuerpo de la función
+        inicio_cuerpo = self.contador_filas + 1
+        if k < n and tokens[k].tipo == "delim" and tokens[k].lexema == "{":
+            k = self._generar_bloque(k + 1)
+        # (k apunta al token después del '}' de cierre)
+
+        # 4) JMP de retorno (vuelve a la instrucción siguiente a la llamada)
+        fila_jmp_retorno = self._emitir(
+            objeto="", fuente=None, operador="JMP",
+            descripcion="", tipo="salto_incond"
+        )
+
+        # 5) Registrar metadatos de la función
+        self.funciones[nombre_fn] = {
+            "inicio_cuerpo": inicio_cuerpo,
+            "jmp_retorno": fila_jmp_retorno,
+            "jmp_salida": fila_jmp_salida,
+            "params": params,
+            "tipo_retorno": tipo_retorno,
+            "var_retorno": None,   # se rellena cuando aparece 'return'
+        }
+
+        # Parchar el JMP de salida: ir a la primera fila después de la función
+        fila_jmp_salida.fuente = str(self.contador_filas + 1)
+
+        return k
+
+    # ==========================================================
     # Asignación: id = expresión ;
     # ==========================================================
     def _procesar_asignacion(self, i):
@@ -62,8 +157,111 @@ class GeneradorTriplos:
             expresion.append(self.tokens[j])
             j += 1
 
+        # ¿Es una llamada a función en el lado derecho?
+        nombre_fn = self._es_llamada_completa(expresion)
+        if nombre_fn is not None and nombre_fn in self.funciones:
+            self._generar_llamada(tok_id.lexema, nombre_fn, expresion)
+            return j + 1
+
         self._generar_expresion_asignacion(tok_id.lexema, expresion)
         return j + 1
+
+    def _es_llamada_completa(self, expresion):
+        """Devuelve el nombre de función si expresion es exactamente id ( ... )."""
+        if len(expresion) < 3:
+            return None
+        if expresion[0].tipo != "id":
+            return None
+        if not (expresion[1].tipo == "delim" and expresion[1].lexema == "("):
+            return None
+        if not (expresion[-1].tipo == "delim" and expresion[-1].lexema == ")"):
+            return None
+        profundidad = 0
+        for idx, tok in enumerate(expresion[1:], start=1):
+            if tok.tipo == "delim" and tok.lexema == "(":
+                profundidad += 1
+            elif tok.tipo == "delim" and tok.lexema == ")":
+                profundidad -= 1
+                if profundidad == 0 and idx != len(expresion) - 1:
+                    return None
+        return expresion[0].lexema
+
+    # ==========================================================
+    # Llamada a función con parámetros
+    # ==========================================================
+    def _generar_llamada(self, id_asignacion, nombre_fn, expresion):
+        """
+        Genera (siguiendo el PDF):
+          - Asignación de cada argumento a su parámetro: param = arg
+          - JMP al inicio del cuerpo de la función
+          - [backpatch: JMP de retorno salta aquí]
+          - T# = var_retorno
+          - id = T#
+        """
+        meta = self.funciones[nombre_fn]
+        params = meta["params"]
+
+        # 1) Parsear argumentos
+        args = self._parsear_argumentos(expresion)
+
+        # 2) Asignar cada argumento a su parámetro (antes del JMP)
+        for idx, arg_tokens in enumerate(args):
+            if idx >= len(params):
+                break
+            nombre_param = params[idx]
+            # Evaluar expresión del argumento en temporales
+            self._generar_expresion_asignacion(nombre_param, arg_tokens)
+
+        # 3) JMP al inicio del cuerpo de la función
+        self._emitir(
+            objeto="", fuente=str(meta["inicio_cuerpo"]), operador="JMP",
+            descripcion="", tipo="salto_incond"
+        )
+
+        # 4) Aquí regresa la función: parchar su JMP de retorno
+        meta["jmp_retorno"].fuente = str(self.contador_filas + 1)
+
+        # 5) T# = var_retorno  (recibe el valor retornado)
+        var_retorno = meta["var_retorno"] or "?"
+        t = self.catalogo.nuevo_temporal()
+        self._emitir(
+            objeto=t, fuente=var_retorno, operador="=",
+            descripcion=f"{t} = {var_retorno}", tipo="asignacion"
+        )
+
+        # 6) id = T#
+        self._emitir(
+            objeto=id_asignacion, fuente=t, operador="=",
+            descripcion=f"{id_asignacion} = {t}", tipo="asignacion"
+        )
+
+        self.catalogo.reiniciar_temporales()
+
+    def _parsear_argumentos(self, expresion):
+        """Divide los tokens entre '(' ... ')' de una llamada en argumentos."""
+        # expresion = [ id, '(', ..., ')' ]
+        args = []
+        actual = []
+        profundidad = 0
+        for idx, tok in enumerate(expresion):
+            if idx == 0:
+                continue
+            if tok.tipo == "delim" and tok.lexema == "(":
+                profundidad += 1
+                if profundidad == 1:
+                    continue
+            if tok.tipo == "delim" and tok.lexema == ")":
+                profundidad -= 1
+                if profundidad == 0:
+                    if actual:
+                        args.append(actual)
+                    break
+            if tok.tipo == "delim" and tok.lexema == "," and profundidad == 1:
+                args.append(actual)
+                actual = []
+                continue
+            actual.append(tok)
+        return args
 
     def _generar_expresion_asignacion(self, id_var, expresion):
         if not expresion:
@@ -89,7 +287,7 @@ class GeneradorTriplos:
             descripcion=f"{id_var} = {temporal_final}",
             tipo="asignacion"
         )
-        
+
         self.catalogo.reiniciar_temporales()
 
     # ==========================================================
@@ -146,7 +344,7 @@ class GeneradorTriplos:
         return salida
 
     # ==========================================================
-    # Evaluar postfijo y emitir filas (sirve para aritmética y relacional)
+    # Evaluar postfijo
     # ==========================================================
     def _evaluar_postfijo(self, postfijo):
         pila = []
@@ -163,25 +361,18 @@ class GeneradorTriplos:
                 if izq_es_temp:
                     t = izq
                     self._emitir(
-                        objeto=t,
-                        fuente=der,
-                        operador=tok.lexema,
+                        objeto=t, fuente=der, operador=tok.lexema,
                         descripcion=f"{t} = {t} {tok.lexema} {der}",
                         tipo=self._tipo_fila_de_operador(tok.lexema)
                     )
                 else:
                     t = self.catalogo.nuevo_temporal()
                     self._emitir(
-                        objeto=t,
-                        fuente=izq,
-                        operador="=",
-                        descripcion=f"{t} = {izq}",
-                        tipo="asignacion"
+                        objeto=t, fuente=izq, operador="=",
+                        descripcion=f"{t} = {izq}", tipo="asignacion"
                     )
                     self._emitir(
-                        objeto=t,
-                        fuente=der,
-                        operador=tok.lexema,
+                        objeto=t, fuente=der, operador=tok.lexema,
                         descripcion=f"{t} = {t} {tok.lexema} {der}",
                         tipo=self._tipo_fila_de_operador(tok.lexema)
                     )
@@ -208,22 +399,17 @@ class GeneradorTriplos:
         self.contador_filas += 1
         fila = Fila(
             numero=self.contador_filas,
-            objeto=objeto,
-            fuente=fuente,
-            operador=operador,
-            descripcion=descripcion,
-            tipo_fila=tipo
+            objeto=objeto, fuente=fuente, operador=operador,
+            descripcion=descripcion, tipo_fila=tipo
         )
         self.filas.append(fila)
         return fila
 
     def _reservar_fila(self):
-        """Reserva un número de fila sin emitirla (if sin else)."""
         self.contador_filas += 1
         return self.contador_filas
 
     def _parchar(self, lista_filas, destino):
-        """Parcha el campo 'operador' (destino del salto) de cada fila TRUE/FALSE."""
         for fila in lista_filas:
             fila.operador = str(destino)
 
@@ -279,7 +465,7 @@ class GeneradorTriplos:
         return True
 
     # ==========================================================
-    # Condición con backpatching: OR -> AND -> atom
+    # Condición con backpatching
     # ==========================================================
     def _procesar_condicion(self, tokens):
         return self._procesar_or(tokens)
@@ -322,7 +508,6 @@ class GeneradorTriplos:
             return [], []
 
         if len(postfijo) == 1:
-            # Operando suelto sin operador relacional: forzar T# = operando
             t = self.catalogo.nuevo_temporal()
             self._emitir(
                 objeto=t, fuente=resultado, operador="=",
@@ -346,15 +531,101 @@ class GeneradorTriplos:
             tok = tokens[j]
             if tok.tipo == "delim" and tok.lexema == "}":
                 return j + 1
+
+            # Sub-función anidada (no permitida, pero por seguridad)
+            if self._es_definicion_funcion(j):
+                j = self._procesar_definicion_funcion(j)
+                continue
+
+            # return
+            if tok.tipo == "reservada" and tok.lexema == "return":
+                j = self._procesar_return(j)
+                continue
+
             if tok.tipo == "reservada" and tok.lexema == "if":
                 j = self._procesar_if(j)
                 continue
+
             if (tok.tipo == "id" and j + 1 < n
                     and tokens[j + 1].tipo == "op" and tokens[j + 1].lexema == "="):
                 j = self._procesar_asignacion(j)
                 continue
+
+            # Llamada como sentencia: id ( ... ) ;
+            if (tok.tipo == "id" and j + 1 < n
+                    and tokens[j + 1].tipo == "delim" and tokens[j + 1].lexema == "("
+                    and tok.lexema in self.funciones):
+                j = self._procesar_llamada_como_sentencia(j)
+                continue
+
             j += 1
         return j
+
+    # ==========================================================
+    # Sentencia return
+    # ==========================================================
+    def _procesar_return(self, i):
+        tokens = self.tokens
+        n = len(tokens)
+        j = i + 1
+        expresion = []
+        while j < n and tokens[j].lexema != ";":
+            expresion.append(tokens[j])
+            j += 1
+
+        # ¿A qué función pertenece este return?
+        nombre_fn = self._funcion_actual()
+        if nombre_fn is not None and expresion:
+            # Guardamos el nombre de la variable retornada.
+            # Si es una sola variable: r1 -> var_retorno = "r1"
+            if len(expresion) == 1 and expresion[0].tipo == "id":
+                self.funciones[nombre_fn]["var_retorno"] = expresion[0].lexema
+            else:
+                # Evaluar expresión y guardar el temporal resultado
+                postfijo = self._a_postfijo(expresion)
+                if len(postfijo) == 1:
+                    valor = postfijo[0].lexema
+                    t = self.catalogo.nuevo_temporal()
+                    self._emitir(
+                        objeto=t, fuente=valor, operador="=",
+                        descripcion=f"{t} = {valor}", tipo="asignacion"
+                    )
+                    self.funciones[nombre_fn]["var_retorno"] = t
+                else:
+                    temporal_final = self._evaluar_postfijo(postfijo)
+                    self.funciones[nombre_fn]["var_retorno"] = temporal_final
+
+        return j + 1
+
+    def _funcion_actual(self):
+        """Devuelve el nombre de la función 'más reciente' abierta."""
+        if not self.funciones:
+            return None
+        # Asumimos que la última definida es la función actual.
+        # (Para código bien estructurado, coincide con la función cuyo
+        # cuerpo estamos recorriendo.)
+        return list(self.funciones.keys())[-1]
+
+    def _procesar_llamada_como_sentencia(self, i):
+        tokens = self.tokens
+        n = len(tokens)
+        nombre_fn = tokens[i].lexema
+        # Encontrar el cierre del ')' de la llamada
+        k = i + 2
+        profundidad = 1
+        while k < n and profundidad > 0:
+            t = tokens[k]
+            if t.tipo == "delim" and t.lexema == "(":
+                profundidad += 1
+            elif t.tipo == "delim" and t.lexema == ")":
+                profundidad -= 1
+                if profundidad == 0:
+                    k += 1
+                    break
+            k += 1
+        expresion = [tokens[i]] + tokens[i + 1:k]
+        self._generar_llamada("_", nombre_fn, expresion)
+        return k + 1 if k < n and tokens[k].lexema == ";" else k
 
     # ==========================================================
     # IF / IF-ELSE con backpatching
@@ -363,7 +634,7 @@ class GeneradorTriplos:
         tokens = self.tokens
         n = len(tokens)
 
-        j = i + 2  # saltar 'if' y '('
+        j = i + 2
         condicion = []
         profundidad = 1
         while j < n and profundidad > 0:
