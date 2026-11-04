@@ -33,6 +33,8 @@ class GeneradorTriplos:
         self.contador_filas = 0
         # nombre -> {"inicio_cuerpo", "jmp_retorno", "var_retorno", "jmp_salida"}
         self.funciones = {}
+        # Pila con el nombre de la función cuyo cuerpo se está generando
+        self.pila_funciones = []
 
     # ==========================================================
     # API pública
@@ -86,8 +88,9 @@ class GeneradorTriplos:
         Genera:
           fila JMP  -> salto sobre el cuerpo (al final de la función)
           [cuerpo de la función]
-          fila JMP  -> retorno (parchada al final del cuerpo)
-        Guarda metadatos en self.funciones.
+          fila JMP  -> retorno (se parcha en cada llamada)
+        La función se registra ANTES del cuerpo para que 'return'
+        sepa a qué función pertenece.
         """
         tokens = self.tokens
         n = len(tokens)
@@ -95,13 +98,13 @@ class GeneradorTriplos:
         tipo_retorno = tokens[i].lexema
         nombre_fn = tokens[i + 1].lexema
 
-        # 1) JMP de salto sobre la función (se parcha luego)
+        # 1) JMP de salto sobre la función (se parcha al final)
         fila_jmp_salida = self._emitir(
             objeto="", fuente=None, operador="JMP",
             descripcion="", tipo="salto_incond"
         )
 
-        # 2) Saltar parámetros hasta ')' que cierra la firma
+        # 2) Leer parámetros hasta el ')' que cierra la firma
         k = i + 2  # apunta a '('
         params = []
         profundidad = 0
@@ -119,29 +122,31 @@ class GeneradorTriplos:
                     params.append(tokens[k + 1].lexema)
             k += 1
 
-        # 3) Cuerpo de la función
-        inicio_cuerpo = self.contador_filas + 1
-        if k < n and tokens[k].tipo == "delim" and tokens[k].lexema == "{":
-            k = self._generar_bloque(k + 1)
-        # (k apunta al token después del '}' de cierre)
-
-        # 4) JMP de retorno (vuelve a la instrucción siguiente a la llamada)
-        fila_jmp_retorno = self._emitir(
-            objeto="", fuente=None, operador="JMP",
-            descripcion="", tipo="salto_incond"
-        )
-
-        # 5) Registrar metadatos de la función
+        # 3) Registrar la función ANTES de generar el cuerpo
         self.funciones[nombre_fn] = {
-            "inicio_cuerpo": inicio_cuerpo,
-            "jmp_retorno": fila_jmp_retorno,
+            "inicio_cuerpo": self.contador_filas + 1,
+            "jmp_retorno": None,
             "jmp_salida": fila_jmp_salida,
             "params": params,
             "tipo_retorno": tipo_retorno,
             "var_retorno": None,   # se rellena cuando aparece 'return'
         }
+        self.pila_funciones.append(nombre_fn)
 
-        # Parchar el JMP de salida: ir a la primera fila después de la función
+        # 4) Cuerpo de la función
+        if k < n and tokens[k].tipo == "delim" and tokens[k].lexema == "{":
+            k = self._generar_bloque(k + 1)
+
+        self.pila_funciones.pop()
+
+        # 5) JMP de retorno (vuelve a la instrucción siguiente a la llamada)
+        fila_jmp_retorno = self._emitir(
+            objeto="", fuente=None, operador="JMP",
+            descripcion="", tipo="salto_incond"
+        )
+        self.funciones[nombre_fn]["jmp_retorno"] = fila_jmp_retorno
+
+        # 6) Parchar el JMP de salida: primera fila después de la función
         fila_jmp_salida.fuente = str(self.contador_filas + 1)
 
         return k
@@ -219,7 +224,8 @@ class GeneradorTriplos:
         )
 
         # 4) Aquí regresa la función: parchar su JMP de retorno
-        meta["jmp_retorno"].fuente = str(self.contador_filas + 1)
+        if meta["jmp_retorno"] is not None:
+            meta["jmp_retorno"].fuente = str(self.contador_filas + 1)
 
         # 5) T# = var_retorno  (recibe el valor retornado)
         var_retorno = meta["var_retorno"] or "?"
@@ -598,13 +604,10 @@ class GeneradorTriplos:
         return j + 1
 
     def _funcion_actual(self):
-        """Devuelve el nombre de la función 'más reciente' abierta."""
-        if not self.funciones:
+        """Devuelve la función cuyo cuerpo se está generando (tope de la pila)."""
+        if not self.pila_funciones:
             return None
-        # Asumimos que la última definida es la función actual.
-        # (Para código bien estructurado, coincide con la función cuyo
-        # cuerpo estamos recorriendo.)
-        return list(self.funciones.keys())[-1]
+        return self.pila_funciones[-1]
 
     def _procesar_llamada_como_sentencia(self, i):
         tokens = self.tokens
