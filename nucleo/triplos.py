@@ -3,7 +3,9 @@ Genera la tabla de triplos a partir de los tokens.
 
 Reglas:
   - Notación postfija para expresiones aritméticas y relacionales.
-  - Jerarquía: ( ) > * / > + - > < > <= >= == != > && > || > =
+  - Jerarquía: ( ) > * / % > + - > < > <= >= == != > && > || > =
+  - Dentro de cada operación se resuelve primero la subexpresión de MAYOR
+    jerarquía (aunque esté a la derecha); en empate, la de la izquierda.
   - Reutilización de temporales.
   - Backpatching para if / if-else con saltos TRUE/FALSE y JMP.
   - Funciones: JMP de salto al definir, JMP de retorno, asignación
@@ -26,6 +28,18 @@ class Fila:
 
 
 class GeneradorTriplos:
+    # Mayor número = mayor jerarquía
+    PRECEDENCIA = {
+        "||": 1,
+        "&&": 2,
+        "==": 3, "!=": 3,
+        "<": 4, ">": 4, "<=": 4, ">=": 4,
+        "+": 5, "-": 5,
+        "*": 6, "/": 6, "%": 6,
+    }
+    RANGO_PARENTESIS = 100
+    TIPOS_OPERANDO = ("id", "full", "royal", "chain")
+
     def __init__(self, tokens, catalogo):
         self.tokens = tokens
         self.catalogo = catalogo
@@ -35,11 +49,16 @@ class GeneradorTriplos:
         self.funciones = {}
         # Pila con el nombre de la función cuyo cuerpo se está generando
         self.pila_funciones = []
+        # id() de los tokens operador que son raíz de un grupo entre paréntesis
+        self._raices_paren = set()
 
     # ==========================================================
     # API pública
     # ==========================================================
     def generar(self):
+        # Pre-pase: conocer todas las funciones (nombre y parámetros)
+        # antes de generar, para poder llamarlas antes de su definición.
+        self._registrar_firmas()
         i = 0
         n = len(self.tokens)
         while i < n:
@@ -61,6 +80,15 @@ class GeneradorTriplos:
                 i = self._procesar_asignacion(i)
                 continue
 
+            # Llamada como sentencia: id ( ... ) ;
+            if (tok.tipo == "id"
+                    and i + 1 < n
+                    and self.tokens[i + 1].tipo == "delim"
+                    and self.tokens[i + 1].lexema == "("
+                    and tok.lexema in self.funciones):
+                i = self._procesar_llamada_como_sentencia(i)
+                continue
+
             i += 1
 
         return self.filas
@@ -77,35 +105,14 @@ class GeneradorTriplos:
             return False
         if i + 1 >= n or toks[i + 1].tipo != "id":
             return False
-        # El nombre no debe estar en medio de una llamada (id seguido de '=')
         if i + 2 >= n or not (toks[i + 2].tipo == "delim" and toks[i + 2].lexema == "("):
             return False
-        # Descartar declaraciones con inicialización: tipo id = ...
         return True
 
-    def _procesar_definicion_funcion(self, i):
-        """
-        Genera:
-          fila JMP  -> salto sobre el cuerpo (al final de la función)
-          [cuerpo de la función]
-          fila JMP  -> retorno (se parcha en cada llamada)
-        La función se registra ANTES del cuerpo para que 'return'
-        sepa a qué función pertenece.
-        """
+    def _leer_parametros(self, k):
+        """k apunta al '(' de la firma. Devuelve (lista_de_params, índice tras ')')."""
         tokens = self.tokens
         n = len(tokens)
-
-        tipo_retorno = tokens[i].lexema
-        nombre_fn = tokens[i + 1].lexema
-
-        # 1) JMP de salto sobre la función (se parcha al final)
-        fila_jmp_salida = self._emitir(
-            objeto="", fuente=None, operador="JMP",
-            descripcion="", tipo="salto_incond"
-        )
-
-        # 2) Leer parámetros hasta el ')' que cierra la firma
-        k = i + 2  # apunta a '('
         params = []
         profundidad = 0
         while k < n:
@@ -121,16 +128,57 @@ class GeneradorTriplos:
                 if k + 1 < n and tokens[k + 1].tipo == "id":
                     params.append(tokens[k + 1].lexema)
             k += 1
+        return params, k
 
-        # 3) Registrar la función ANTES de generar el cuerpo
-        self.funciones[nombre_fn] = {
-            "inicio_cuerpo": self.contador_filas + 1,
-            "jmp_retorno": None,
-            "jmp_salida": fila_jmp_salida,
-            "params": params,
-            "tipo_retorno": tipo_retorno,
-            "var_retorno": None,   # se rellena cuando aparece 'return'
-        }
+    def _registrar_firmas(self):
+        """
+        Recorre todos los tokens y registra cada función (nombre, parámetros,
+        tipo). Lo que depende del código generado (inicio del cuerpo, JMP de
+        retorno, variable retornada) se completa al generar la definición;
+        mientras tanto, las llamadas se guardan en 'pendientes'.
+        """
+        for i in range(len(self.tokens)):
+            if self._es_definicion_funcion(i):
+                nombre = self.tokens[i + 1].lexema
+                params, _ = self._leer_parametros(i + 2)
+                self.funciones[nombre] = {
+                    "params": params,
+                    "tipo_retorno": self.tokens[i].lexema,
+                    "inicio_cuerpo": None,
+                    "jmp_retorno": None,
+                    "jmp_salida": None,
+                    "var_retorno": None,
+                    "definida": False,   # True cuando ya se generó todo el cuerpo
+                    "pendientes": [],    # llamadas generadas antes de terminar la definición
+                }
+
+    def _procesar_definicion_funcion(self, i):
+        """
+        Genera:
+          fila JMP  -> salto sobre el cuerpo (al final de la función)
+          [cuerpo de la función]
+          fila JMP  -> retorno (se parcha en cada llamada)
+        Al terminar, resuelve las llamadas que se generaron antes de que
+        existiera el cuerpo (llamadas "hacia adelante" o recursivas).
+        """
+        tokens = self.tokens
+        n = len(tokens)
+
+        nombre_fn = tokens[i + 1].lexema
+
+        # 1) JMP de salto sobre la función (se parcha al final)
+        fila_jmp_salida = self._emitir(
+            objeto="", fuente=None, operador="JMP",
+            descripcion="", tipo="salto_incond"
+        )
+
+        # 2) Parámetros (ya registrados en el pre-pase)
+        _, k = self._leer_parametros(i + 2)
+
+        # 3) Completar los datos de la función ANTES de generar el cuerpo
+        meta = self.funciones[nombre_fn]
+        meta["inicio_cuerpo"] = self.contador_filas + 1
+        meta["jmp_salida"] = fila_jmp_salida
         self.pila_funciones.append(nombre_fn)
 
         # 4) Cuerpo de la función
@@ -144,10 +192,16 @@ class GeneradorTriplos:
             objeto="", fuente=None, operador="JMP",
             descripcion="", tipo="salto_incond"
         )
-        self.funciones[nombre_fn]["jmp_retorno"] = fila_jmp_retorno
+        meta["jmp_retorno"] = fila_jmp_retorno
 
         # 6) Parchar el JMP de salida: primera fila después de la función
         fila_jmp_salida.fuente = str(self.contador_filas + 1)
+
+        # 7) Resolver las llamadas que se hicieron antes de terminar la función
+        meta["definida"] = True
+        for fila_jmp, fila_recibe, direccion_retorno in meta["pendientes"]:
+            self._resolver_llamada(meta, fila_jmp, fila_recibe, direccion_retorno)
+        meta["pendientes"] = []
 
         return k
 
@@ -196,46 +250,37 @@ class GeneradorTriplos:
     # ==========================================================
     def _generar_llamada(self, id_asignacion, nombre_fn, expresion):
         """
-        Genera (siguiendo el PDF):
+        Genera:
           - Asignación de cada argumento a su parámetro: param = arg
           - JMP al inicio del cuerpo de la función
-          - [backpatch: JMP de retorno salta aquí]
-          - T# = var_retorno
+          - T# = var_retorno   (aquí regresa la función)
           - id = T#
+        Si la función aún no se termina de generar (se define más abajo en el
+        código, o es una llamada recursiva), el JMP, el JMP de retorno y
+        var_retorno quedan pendientes y se parchan al terminar la definición.
         """
         meta = self.funciones[nombre_fn]
         params = meta["params"]
 
-        # 1) Parsear argumentos
         args = self._parsear_argumentos(expresion)
 
-        # 2) Asignar cada argumento a su parámetro (antes del JMP)
         for idx, arg_tokens in enumerate(args):
             if idx >= len(params):
                 break
-            nombre_param = params[idx]
-            # Evaluar expresión del argumento en temporales
-            self._generar_expresion_asignacion(nombre_param, arg_tokens)
+            self._generar_expresion_asignacion(params[idx], arg_tokens)
 
-        # 3) JMP al inicio del cuerpo de la función
-        self._emitir(
-            objeto="", fuente=str(meta["inicio_cuerpo"]), operador="JMP",
+        fila_jmp = self._emitir(
+            objeto="", fuente=None, operador="JMP",
             descripcion="", tipo="salto_incond"
         )
+        direccion_retorno = self.contador_filas + 1
 
-        # 4) Aquí regresa la función: parchar su JMP de retorno
-        if meta["jmp_retorno"] is not None:
-            meta["jmp_retorno"].fuente = str(self.contador_filas + 1)
-
-        # 5) T# = var_retorno  (recibe el valor retornado)
-        var_retorno = meta["var_retorno"] or "?"
         t = self.catalogo.nuevo_temporal()
-        self._emitir(
-            objeto=t, fuente=var_retorno, operador="=",
-            descripcion=f"{t} = {var_retorno}", tipo="asignacion"
+        fila_recibe = self._emitir(
+            objeto=t, fuente=None, operador="=",
+            descripcion="", tipo="asignacion"
         )
 
-        # 6) id = T#
         self._emitir(
             objeto=id_asignacion, fuente=t, operador="=",
             descripcion=f"{id_asignacion} = {t}", tipo="asignacion"
@@ -243,9 +288,21 @@ class GeneradorTriplos:
 
         self.catalogo.reiniciar_temporales()
 
+        if meta["definida"]:
+            self._resolver_llamada(meta, fila_jmp, fila_recibe, direccion_retorno)
+        else:
+            meta["pendientes"].append((fila_jmp, fila_recibe, direccion_retorno))
+
+    def _resolver_llamada(self, meta, fila_jmp, fila_recibe, direccion_retorno):
+        """Completa los datos de una llamada una vez que la función ya existe."""
+        fila_jmp.fuente = str(meta["inicio_cuerpo"])
+        var_retorno = meta["var_retorno"] or "?"
+        fila_recibe.fuente = var_retorno
+        fila_recibe.descripcion = f"{fila_recibe.objeto} = {var_retorno}"
+        meta["jmp_retorno"].fuente = str(direccion_retorno)
+
     def _parsear_argumentos(self, expresion):
         """Divide los tokens entre '(' ... ')' de una llamada en argumentos."""
-        # expresion = [ id, '(', ..., ')' ]
         args = []
         actual = []
         profundidad = 0
@@ -300,20 +357,11 @@ class GeneradorTriplos:
     # Postfijo (shunting-yard)
     # ==========================================================
     def _a_postfijo(self, expresion):
-        precedencia = {
-            "||": 1,
-            "&&": 2,
-            "==": 3, "!=": 3,
-            "<": 4, ">": 4, "<=": 4, ">=": 4,
-            "+": 5, "-": 5,
-            "*": 6, "/": 6,
-        }
-
         salida = []
         pila = []
 
         for tok in expresion:
-            if tok.tipo in ("id", "full", "royal", "chain"):
+            if tok.tipo in self.TIPOS_OPERANDO:
                 salida.append(tok)
                 continue
 
@@ -326,17 +374,21 @@ class GeneradorTriplos:
                     salida.append(pila.pop())
                 if pila:
                     pila.pop()
+                # El último elemento emitido es la raíz del grupo entre
+                # paréntesis: se marca para darle jerarquía máxima.
+                if salida:
+                    self._raices_paren.add(id(salida[-1]))
                 continue
 
             if tok.tipo == "op":
-                prec_actual = precedencia.get(tok.lexema, 0)
+                prec_actual = self.PRECEDENCIA.get(tok.lexema, 0)
                 while pila:
                     tope = pila[-1]
                     if tope.tipo == "delim" and tope.lexema == "(":
                         break
                     if tope.tipo != "op":
                         break
-                    prec_tope = precedencia.get(tope.lexema, 0)
+                    prec_tope = self.PRECEDENCIA.get(tope.lexema, 0)
                     if prec_tope >= prec_actual:
                         salida.append(pila.pop())
                     else:
@@ -350,47 +402,72 @@ class GeneradorTriplos:
         return salida
 
     # ==========================================================
-    # Evaluar postfijo
+    # Evaluar postfijo respetando la jerarquía
     # ==========================================================
     def _evaluar_postfijo(self, postfijo):
+        """
+        Construye un árbol a partir del postfijo y genera los triplos
+        resolviendo, en cada operador, primero el hijo de mayor jerarquía.
+        Devuelve el nombre del resultado (temporal, o lexema si es una hoja).
+        """
         pila = []
-
         for tok in postfijo:
-            if tok.tipo in ("id", "full", "royal", "chain"):
-                pila.append((tok.lexema, False))
-                continue
-
-            if tok.tipo == "op":
-                der, der_es_temp = pila.pop()
-                izq, izq_es_temp = pila.pop()
-
-                if izq_es_temp:
-                    t = izq
-                    self._emitir(
-                        objeto=t, fuente=der, operador=tok.lexema,
-                        descripcion=f"{t} = {t} {tok.lexema} {der}",
-                        tipo=self._tipo_fila_de_operador(tok.lexema)
+            if tok.tipo in self.TIPOS_OPERANDO:
+                pila.append(("hoja", tok))
+            elif tok.tipo == "op":
+                if len(pila) < 2:
+                    raise ValueError(
+                        f"Expresión inválida: faltan operandos para '{tok.lexema}'"
                     )
-                else:
-                    t = self.catalogo.nuevo_temporal()
-                    self._emitir(
-                        objeto=t, fuente=izq, operador="=",
-                        descripcion=f"{t} = {izq}", tipo="asignacion"
-                    )
-                    self._emitir(
-                        objeto=t, fuente=der, operador=tok.lexema,
-                        descripcion=f"{t} = {t} {tok.lexema} {der}",
-                        tipo=self._tipo_fila_de_operador(tok.lexema)
-                    )
-
-                pila.append((t, True))
+                der = pila.pop()
+                izq = pila.pop()
+                pila.append(("op", tok, izq, der))
 
         if not pila:
             return None
-        return pila[-1][0]
+        return self._generar_nodo(pila[-1])[0]
+
+    def _rango(self, nodo):
+        """Jerarquía de un nodo: hoja=0, operador=su precedencia, ( )=máxima."""
+        if nodo[0] == "hoja":
+            return 0
+        tok = nodo[1]
+        if id(tok) in self._raices_paren:
+            return self.RANGO_PARENTESIS
+        return self.PRECEDENCIA.get(tok.lexema, 0)
+
+    def _generar_nodo(self, nodo):
+        """Emite los triplos del subárbol; devuelve (nombre, es_temporal)."""
+        if nodo[0] == "hoja":
+            return nodo[1].lexema, False
+
+        _, tok, nodo_izq, nodo_der = nodo
+
+        # Se resuelve primero el de mayor jerarquía; en empate, el izquierdo
+        if self._rango(nodo_der) > self._rango(nodo_izq):
+            der, _ = self._generar_nodo(nodo_der)
+            izq, izq_es_temp = self._generar_nodo(nodo_izq)
+        else:
+            izq, izq_es_temp = self._generar_nodo(nodo_izq)
+            der, _ = self._generar_nodo(nodo_der)
+
+        if izq_es_temp:
+            t = izq
+        else:
+            t = self.catalogo.nuevo_temporal()
+            self._emitir(
+                objeto=t, fuente=izq, operador="=",
+                descripcion=f"{t} = {izq}", tipo="asignacion"
+            )
+        self._emitir(
+            objeto=t, fuente=der, operador=tok.lexema,
+            descripcion=f"{t} = {t} {tok.lexema} {der}",
+            tipo=self._tipo_fila_de_operador(tok.lexema)
+        )
+        return t, True
 
     def _tipo_fila_de_operador(self, lexema):
-        if lexema in ("+", "-", "*", "/"):
+        if lexema in ("+", "-", "*", "/", "%"):
             return "aritmetica"
         if lexema in ("<", ">", "<=", ">=", "==", "!="):
             return "relacional"
@@ -538,12 +615,10 @@ class GeneradorTriplos:
             if tok.tipo == "delim" and tok.lexema == "}":
                 return j + 1
 
-            # Sub-función anidada (no permitida, pero por seguridad)
             if self._es_definicion_funcion(j):
                 j = self._procesar_definicion_funcion(j)
                 continue
 
-            # return
             if tok.tipo == "reservada" and tok.lexema == "return":
                 j = self._procesar_return(j)
                 continue
@@ -557,7 +632,6 @@ class GeneradorTriplos:
                 j = self._procesar_asignacion(j)
                 continue
 
-            # Llamada como sentencia: id ( ... ) ;
             if (tok.tipo == "id" and j + 1 < n
                     and tokens[j + 1].tipo == "delim" and tokens[j + 1].lexema == "("
                     and tok.lexema in self.funciones):
@@ -579,15 +653,11 @@ class GeneradorTriplos:
             expresion.append(tokens[j])
             j += 1
 
-        # ¿A qué función pertenece este return?
         nombre_fn = self._funcion_actual()
         if nombre_fn is not None and expresion:
-            # Guardamos el nombre de la variable retornada.
-            # Si es una sola variable: r1 -> var_retorno = "r1"
             if len(expresion) == 1 and expresion[0].tipo == "id":
                 self.funciones[nombre_fn]["var_retorno"] = expresion[0].lexema
             else:
-                # Evaluar expresión y guardar el temporal resultado
                 postfijo = self._a_postfijo(expresion)
                 if len(postfijo) == 1:
                     valor = postfijo[0].lexema
@@ -613,7 +683,6 @@ class GeneradorTriplos:
         tokens = self.tokens
         n = len(tokens)
         nombre_fn = tokens[i].lexema
-        # Encontrar el cierre del ')' de la llamada
         k = i + 2
         profundidad = 1
         while k < n and profundidad > 0:
@@ -667,7 +736,7 @@ class GeneradorTriplos:
                 j = self._generar_bloque(j + 1)
             fila_jmp.fuente = str(self.contador_filas + 1)
         else:
-            self._reservar_fila()
+            # Sin else: FALSE salta a la siguiente fila que se emita
             self._parchar(falselist, self.contador_filas + 1)
 
         return j

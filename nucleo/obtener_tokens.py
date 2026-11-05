@@ -37,7 +37,7 @@ class Tokenizador:
         }
 
     # Operadores
-    OPERADORES = {"=", "+", "-", "*", "/", "<", ">", "!"}
+    OPERADORES = {"=", "+", "-", "*", "/", "<", ">", "!", "%"}
     
     OPERADORES_2 = {"<=", ">=", "==", "!=", "&&", "||"}
 
