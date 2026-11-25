@@ -63,7 +63,14 @@ class Tokenizador:
 
     def _quitar_comentarios(self, codigo):
         """Elimina comentarios de línea (//) y de bloque (/* */)."""
-        codigo = re.sub(r"/\*.*?\*/", "", codigo, flags=re.DOTALL)
+        # Se conservan los saltos de línea del comentario para no
+        # desfasar los renglones de lo que sigue.
+        codigo = re.sub(
+            r"/\*.*?\*/",
+            lambda m: "\n" * m.group().count("\n"),
+            codigo,
+            flags=re.DOTALL,
+        )
         codigo = re.sub(r"//.*", "", codigo)
         return codigo
 

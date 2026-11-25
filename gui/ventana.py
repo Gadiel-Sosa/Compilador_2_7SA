@@ -2,7 +2,9 @@ import tkinter as tk
 from tkinter import ttk, scrolledtext, filedialog, messagebox
 from nucleo.obtener_tokens import Tokenizador
 from nucleo.analizador import Analizador
-import os    
+from nucleo.optimizacion import optimizar
+from gui.ventana_optimizacion import VentanaOptimizacion
+import os
  
  
 class CompiladorGUI:
@@ -220,12 +222,15 @@ class CompiladorGUI:
                 "", "end", values=(token, lexema, renglon, descripcion)
             )
 
-        # 5. Generar triplos
+        # 5. Optimizar (el triplo se genera del código optimizado)
+        analizador_triplo = self._optimizar(codigo, tokenizador, analizador, resultado)
+
+        # 6. Generar triplos
         from nucleo.triplos import generar_triplos
         from nucleo.exportar import exportar_csv
 
         try:
-            filas, catalogo = generar_triplos(analizador)
+            filas, catalogo = generar_triplos(analizador_triplo)
         except Exception as e:
             messagebox.showerror("Error al generar triplos", str(e))
             return
@@ -267,6 +272,52 @@ class CompiladorGUI:
             "Exportación exitosa",
             f"Archivo generado:\n\n{ruta_csv}"
         )
+
+    # ---------------------------------------------------------
+    def _optimizar(self, codigo, tokenizador, analizador, resultado):
+        """
+        Optimiza el código, muestra la ventana con el resultado y devuelve
+        el analizador del que se generará el triplo (el del código
+        optimizado, o el original si no se pudo optimizar).
+        """
+        errores_lex = tokenizador.errores
+        if errores_lex or resultado.errores:
+            detalle = "".join(
+                f"\n  • {e.lexema} (renglón {e.renglon}): {e.descripcion}"
+                for e in errores_lex[:10]
+            )
+            messagebox.showwarning(
+                "Optimización omitida",
+                f"El código tiene {len(errores_lex)} error(es) léxico(s) y "
+                f"{len(resultado.errores)} error(es) semántico(s).\n"
+                "No se optimizó; el triplo se generará con el código original."
+                + (f"\n\nErrores léxicos:{detalle}" if detalle else "")
+            )
+            return analizador
+
+        try:
+            res_opt = optimizar(analizador.tokens)
+        except Exception as e:
+            messagebox.showerror("Error al optimizar", str(e))
+            return analizador
+
+        if getattr(self, "ventana_opt", None) is not None and self.ventana_opt.winfo_exists():
+            self.ventana_opt.destroy()
+        self.ventana_opt = VentanaOptimizacion(self.root, codigo, res_opt)
+
+        # Re-analizar el código optimizado para generar su triplo
+        tokenizador_opt = Tokenizador(res_opt.codigo)
+        analizador_opt = Analizador(tokenizador_opt.tokenizar())
+        resultado_opt = analizador_opt.analizar()
+        if tokenizador_opt.errores or resultado_opt.errores:
+            messagebox.showwarning(
+                "Código optimizado con errores",
+                "El código optimizado presenta errores; "
+                "el triplo se generará con el código original."
+            )
+            return analizador
+        return analizador_opt
+
     # ---------------------------------------------------------
     # def exportar_triplo(self):
     #     """Genera y exporta el triplo a CSV."""
